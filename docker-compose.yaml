@@ -1,0 +1,70 @@
+version: "3"
+
+services:
+
+  scylla-node1:
+    container_name: scylla-node1
+    image: scylladb/scylla:5.2
+    restart: always
+    command: --smp 1 --memory 4G --developer-mode 1 --api-address 0.0.0.0
+    volumes:
+      - "./scylla/scylla.yaml:/etc/scylla/scylla.yaml"
+      - "./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties"
+      - "./scylla/migration.cql:/tmp/migration.cql"
+    ports:
+      - 9042:9042
+    networks:
+      infra:
+
+  redpanda:
+    container_name: redpanda
+    image: vectorized/redpanda:v22.3.17
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --node-id 0
+      - --memory 2G
+      - --reserve-memory 2G
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://0.0.0.0:9092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr localhost:8082
+
+    networks:
+      infra:
+    ports:
+      - 8081:8081
+      - 8082:8082
+      - 9092:9092
+      - 29092:29092
+
+  console:
+    container_name: redpanda-console
+    image: docker.redpanda.com/vectorized/console:v2.2.4
+    restart: on-failure
+    entrypoint: /bin/sh
+    command: -c "echo \"$$CONSOLE_CONFIG_FILE\" > /tmp/config.yml; /app/console"
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:29092"]
+          schemaRegistry:
+            enabled: false
+            urls: ["http://redpanda:8081"]
+        connect:
+          enabled: false
+          clusters:
+            - name: datagen
+              url: http://connect:8083
+    networks:
+      infra:
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redpanda
+
+networks:
+  infra:
+    driver: bridge
