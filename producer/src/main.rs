@@ -2,13 +2,12 @@
 use anyhow::Result;
 use exchange_observer::{util::Elapsed, AppConfig};
 use crate::ws::WsStream;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use rskafka::client::{Client, ClientBuilder};
 use serde_json::Value;
 use std::{
     cell::RefCell,
     collections::HashMap,
-    env,
     time::Instant,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -21,12 +20,7 @@ pub mod cooldown;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let path = env::current_dir()?;
-    let config_path = env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    let cfg: AppConfig = AppConfig::load(&config_path);
-    debug!("The current directory is {}", path.display());
-    debug!("config loaded: {:#?}", cfg);
+    let cfg: AppConfig = AppConfig::load()?;
     info!("Connecting to message queue at: {} ...", cfg.mq.ip);
 
     //setup redpanda

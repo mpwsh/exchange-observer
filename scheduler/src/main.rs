@@ -4,10 +4,8 @@ use anyhow::Result;
 use app::App;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use exchange_observer::AppConfig;
-use log::debug;
 use models::{Account, TokenStatus};
 use scylla::macros::FromRow;
-use std::env;
 use std::error::Error;
 use std::time;
 use utils::*;
@@ -18,13 +16,7 @@ mod utils;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let path = env::current_dir()?;
-    let config_path = env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    let mut cfg: AppConfig = AppConfig::load(&config_path);
-    debug!("The current directory is {}", path.display());
-    debug!("config loaded: {:#?}", cfg);
-
+    let mut cfg: AppConfig = AppConfig::load()?;
     let mut app = App::init(&cfg).await;
     //setup account balance and spendable per token
     let mut account = Account::new();

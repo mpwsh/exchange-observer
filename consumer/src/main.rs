@@ -1,13 +1,11 @@
 use anyhow::Result;
-use exchange_observer::{AppConfig, models::*};
+use exchange_observer::{models::*, AppConfig};
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use scylla::transport::session::Session as DbSession;
 use scylla::SessionBuilder;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::env;
-use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,11 +19,7 @@ use rskafka::client::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let path = env::current_dir()?;
-    let config_path = env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    let cfg: AppConfig = AppConfig::load(&config_path);
-    debug!("The current directory is {}", path.display());
+    let cfg: AppConfig = AppConfig::load()?;
     debug!("config loaded: {:#?}", cfg);
     info!(
         "Connecting to database at {}:{} ...",
@@ -40,20 +34,19 @@ async fn main() -> Result<()> {
 
     //Check for Schema Agreement
     info!("Waiting for schema agreement for 5 seconds...");
-    if session
+    match session
         .await_timed_schema_agreement(Duration::from_secs(5))
-        .await?
+        .await
     {
-        info!("Schema is in agreement - Proceeding");
-    } else {
-        info!("Schema is NOT in agreement - Stop processing");
-        process::exit(1);
-    }
+        Ok(_) => info!("Schema is in agreement - Proceeding"),
+        Err(e) => error!("Error while retrieving schema agrement. Error: {e}"),
+    };
 
     // setup redpanda client
     let connection = format!("{}:{}", cfg.mq.ip, cfg.mq.port);
     info!("Connecting to message queue at {} ...", connection);
     let client = ClientBuilder::new(vec![connection]).build().await?;
+
     let topics = cfg.mq.topics;
     let mut streams = Vec::new();
 

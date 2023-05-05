@@ -1,5 +1,8 @@
 use serde_derive::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
+use std::env;
+use log::debug;
+use anyhow::Result;
 pub mod models;
 pub mod util;
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -98,11 +101,17 @@ impl AppConfig {
             server: None,
         }
     }
-    pub fn load(config_path: &str) -> Self {
-        confy::load_path(config_path).unwrap_or_else(|e| {
+    pub fn load() -> Result<Self> {
+        let path = env::current_dir()?;
+        debug!("The current directory is {}", path.display());
+        let config_path = env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
+        env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+        let cfg = confy::load_path(config_path).unwrap_or_else(|e| {
             log::error!("Loading default config due to:\n{}", e);
             AppConfig::default()
-        })
+        });
+        debug!("config loaded: {:#?}", cfg);
+        Ok(cfg)
     }
 }
 impl Default for Database {
