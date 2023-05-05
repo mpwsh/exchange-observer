@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //update account balance
         account.calculate_balance().calculate_earnings();
         //Update change
-        account.change = get_change(account.balance.current, account.balance.start);
+        account.change = get_percentage_diff(account.balance.current, account.balance.start);
 
         //remove tokens with balance < 0 usd
         account.portfolio.retain(|t| t.balance.current > 0.0);

@@ -149,7 +149,8 @@ impl App {
                     t.price = last;
                 }
             };
-            t.change = get_change(t.balance.current * t.price, t.buy_price * t.balance.start);
+            t.change =
+                get_percentage_diff(t.balance.current * t.price, t.buy_price * t.balance.start);
 
             //update timeout
             t.timeout = t.timeout - self.time.elapsed;
@@ -201,8 +202,8 @@ impl App {
                     let (last, open24h, volccy24h, high24h, low24h): (f32, f32, f32, f32, f32) =
                         row.unwrap();
                     t.vol24h = volccy24h;
-                    t.change24h = get_change(last, open24h);
-                    t.range24h = get_range(high24h, low24h);
+                    t.change24h = get_percentage_diff(last, open24h);
+                    t.range24h = get_percentage_diff(high24h, low24h);
                 }
             };
         }
@@ -392,7 +393,8 @@ impl App {
                 self.logs
                     .push("Unable to fetch last candles using get. will use default".to_string())
             };*/
-            let change = get_change(t.balance.current * t.price, t.buy_price * t.balance.start);
+            let change =
+                get_percentage_diff(t.balance.current * t.price, t.buy_price * t.balance.start);
             let sell_floor = if t.config.sell_floor == 0.0 {
                 strategy.sell_floor.unwrap()
             } else {

@@ -1,4 +1,4 @@
-use crate::{FromRow, Result, Utc, Duration};
+use crate::{Duration, FromRow, Result, Utc};
 use exchange_observer::Strategy;
 use serde_derive::{Deserialize, Serialize};
 use std::str::FromStr;
