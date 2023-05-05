@@ -1,6 +1,6 @@
 ## Exchange Observer | Trading sim
 
-A trading simulator for OKX exchange. Reads OKX websocket data and tries to make smart trades based on your [Strategy configuration](config.toml) settings.
+A trading simulator for OKX exchange. Reads OKX websocket data and tries to make smart trades based on your [Strategy configuration](config-sample.toml) settings.
 
 ## Disclaimer
 
@@ -9,7 +9,7 @@ The `scheduler` will try to follow the line going up, by querying all tokens and
 I'm just sharing this because i think its a good template to quickly setup a `producer` -> `consumer` -> `app` infra.
 That being said, im **not responsible** if you lose money by connecting on an real trading exchange API.
 
-Each setting in [config.toml](config.toml) is explained but feel free open an issue to ask questions if something is not clear.
+Each setting in [config.toml](config-sample.toml) is explained but feel free open an issue to ask questions if something is not clear.
 
 # Setup
 
