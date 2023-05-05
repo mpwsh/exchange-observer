@@ -29,9 +29,9 @@ portfolio_size=8
 #deny_list=["BTC", "ETH", "USTC", "UST", "LUNC", "BABYDOGE", "YFI", "ADA", "WAXP", "CVC", "GMT", "WAVES", "ROAD", "REP", "OP", "ANC", "LOOKS", "IOST", "SNT", "ELF", "BTT", "BRWL", "ANC", "MIR", "ROAD", "FORTH", "CVC", "GLM", "ELF", "PHA", "ONT", "OP", "EGLD", "APIX", "INX", "QOM", "GOG", "XETA"]
 #deny_list=["TAMA", "SKEB", "CTC", "DEVT","BNT"]
 #deny_list=["BTC","ETH", "MAGIC"]
+
 #retrieve last(x) minutes of candlesticks to analyze the performance of tokens
 timeframe=5
-min_change_last_candle=0.1
 #time to wait before adding tokens to portfolio
 cooldown=10
 #Dont wait for cooldown on first round (set to false when using blank database)
@@ -39,12 +39,13 @@ quickstart=true
 #Min vol to be elegible (a sane default is: timeframe * 1600 to avoid tokens with high volatility in short periods of time)
 min_vol=8000
 #Min change to be elegible
-min_change=0.05
+min_change=0.1
 #Min standard deviation on selected timeframe. (std deviation coming from sum of all candles)
-min_deviation=0.1
-
+min_deviation=0.01
+#Last candle should be at least this much to be eligible
+min_change_last_candle=0.03
 #sell if losing more than (x) % (optional. Will sell if token is not in top tokens when cooldown finishes)
-stoploss=5
+stoploss=4.0
 #Sell if earnings on selected token are above (x)%.
 cashout=3.0 #token will be bought back with spendable balance if is still selected
 #Only sell tokens from portfolio if earnings are above (x)%
@@ -75,7 +76,7 @@ port=9092
 name = "candle1m"
 partitions = 5
 #Offset per topic to start retrieving messages
-offset = 340000
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -85,7 +86,7 @@ max_wait_ms=500
 name = "tickers"
 partitions = 20
 #Offset per topic to start retrieving messages
-offset = 700000
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -95,7 +96,7 @@ max_wait_ms=500
 name = "trades"
 partitions = 10
 #Offset per topic to start retrieving messages
-offset = 260000
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000

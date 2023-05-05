@@ -1,11 +1,13 @@
 ## Exchange Observer | Trading sim
 
+A trading simulator for OKX exchange. Reads OKX websocket data and tries to make smart trades based on your [Strategy configuration](config.toml) settings.
+
 ## Disclaimer
 
-> The trading simulation logic implemented is super rough and kinda dumb (im still experimenting with it tho).
-> The `scheduler` will try to follow the line going up, by querying all tokens and buying whatever one is doing good numbers.
-> I'm just sharing this because i think its a good template to quickly setup a `producer` -> `consumer` -> `app` infra.
-> That being said, im not responsible if you lose money by using on an actual exchange.
+The trading simulation logic implemented is super rough and kinda dumb (im still experimenting with it tho).
+The `scheduler` will try to follow the line going up, by querying all tokens and buying whatever one is doing good numbers.
+I'm just sharing this because i think its a good template to quickly setup a `producer` -> `consumer` -> `app` infra.
+That being said, im **not responsible** if you lose money by connecting on an real trading exchange API.
 
 Each setting in [config.toml](config.toml) is explained but feel free open an issue to ask questions if something is not clear.
 
@@ -15,6 +17,7 @@ Each setting in [config.toml](config.toml) is explained but feel free open an is
 
 - Redpanda
 - Scylla
+- Pushover (optional)
 
 ## Components
 
@@ -58,25 +61,26 @@ Redpanda console access: http://localhost:8080/topics
 
 ## Configure data retention for each topic
 
+The producer will create the topics based on the config.toml settings
+To create them manually use:
+
 ```bash
 alias rpk="docker exec redpanda rpk"
-#The producer will create the topics based on the config.toml settings
-#To can create them manually use:
-#~> rpk topic create candle1m tickers trades --partitions 10 --replicas 1 -c cleanup.policy=compact
+rpk topic create candle1m tickers trades --partitions 10 --replicas 1 -c cleanup.policy=compact
 
 # Topic configuration is not available on the rskafka crate.
 # To set 12hs retention use:
 rpk topic alter-config candle1m tickers trades --set retention.ms=43200000 --brokers localhost
 ```
 
-## Spin up all the components
+## Spin up all the producer and consumer
 
 ```bash
 cargo run --bin producer
 cargo run --bin consumer
 ```
 
-## Configure scheduler and strategy
+## Configure scheduler account and strategy settings
 
 ```bash
 vim config.toml
@@ -88,10 +92,15 @@ Start
 cargo run --bin scheduler
 ```
 
-## UI
+## TUI
 
 This is how the scheduler TUI looks.
 ![exchange-observer ui](./static/ui.png)
+
+### Push Notifications
+
+The scheduler can send status updates every 30 minutes informing you about your current balance, bot uptime and account change % if.
+It will also send a notification when cash-outs and stop loss trigger.
 
 ## Debug
 
@@ -132,10 +141,14 @@ rpk topic delete candle1m trades tickers
 docker-compose down
 ```
 
+### Tip:
+
+If you only want to trade coins going up by a lot, set the `min_deviation` setting to something higher.
+
 ### More disclaimers:
 
 The [producer](./producer) websocket gets disconnected constantly.
-It will reconnect after connection gets closed, but thats just cheating lol, and we miss around 5 seconds of data which affect trading a lot.
+It will reconnect after connection gets closed, but thats just cheating lol, and we miss around 5 seconds of data which affects trading decisions.
 
 ## TODO:
 
