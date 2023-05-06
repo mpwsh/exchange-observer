@@ -61,8 +61,8 @@ logs=true
 
 [pushover]
 enable=false
-token="a8s2c5z9ny94rkbptex99442te62az"
-key="ug4ffzon247uk17hb2dv4orzeqypfx"
+token="<your-pushover-token>"
+key="<your-pushover-key>"
 
 [server]
 #websocket server (not implemented yet)
@@ -77,8 +77,7 @@ workers = 8
 
 [database]
 #Scylla or Cassandra
-ip="192.168.1.31"
-#ip="192.168.1.31"
+ip="127.0.0.1"
 port=9042
 workers=8
 keyspace="okx"
@@ -87,8 +86,7 @@ data_ttl=7200 # 2 hours
 
 [mq]
 #Redpanda or Kafka
-ip="192.168.1.31"
-#ip="192.168.1.31"
+ip="127.0.0.1"
 port=9092
 
 [[mq.topics]]
