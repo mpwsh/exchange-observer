@@ -1,18 +1,21 @@
-use crate::{warn,info, Stats};
-use exchange_observer::{models::*, AppConfig};
+use crate::{info, warn, Stats};
 use anyhow::Result;
-use tokio::sync::Mutex;
-use scylla::transport::session::Session as DbSession;
-use std::time::Instant;
-use std::sync::Arc;
-use std::collections::HashMap;
+use exchange_observer::{models::*, AppConfig};
 use rskafka::client::{
     consumer::{StartOffset, StreamConsumer, StreamConsumerBuilder},
     partition::OffsetAt,
     Client,
 };
+use scylla::transport::session::Session as DbSession;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Mutex;
 
-pub async fn init_streams(client: &Client, cfg: &AppConfig) -> Result<(Vec<StreamConsumer>, Stats)> {
+pub async fn init_streams(
+    client: &Client,
+    cfg: &AppConfig,
+) -> Result<(Vec<StreamConsumer>, Stats)> {
     //Topic stats
     let mut offset_stats: HashMap<String, (i64, i64)> = HashMap::new();
     //total msg count
@@ -71,14 +74,19 @@ pub async fn init_streams(client: &Client, cfg: &AppConfig) -> Result<(Vec<Strea
         offset_map: Mutex::new(offset_stats),
         cooldown: Mutex::new(Instant::now()),
     };
-   info!(
+    info!(
         "Found {} messages between selected offset and latest. Starting catchup",
         stats.total_msgs.lock().await
     );
     Ok((streams, stats))
 }
 
-pub async fn update_stats(session: &DbSession, topic: Channel, stats: Arc<Stats>, cfg: &AppConfig) -> Result<Arc<Stats>> {
+pub async fn update_stats(
+    session: &DbSession,
+    topic: Channel,
+    stats: Arc<Stats>,
+    cfg: &AppConfig,
+) -> Result<Arc<Stats>> {
     let mut map = stats.offset_map.lock().await;
     if let Some(x) = map.get_mut(&topic.to_string()) {
         let mut i = *x;
@@ -115,9 +123,8 @@ pub async fn update_stats(session: &DbSession, topic: Channel, stats: Arc<Stats>
         );
         let ack_rate = *stats.inc.lock().await / 5;
         info!("inc rate: {} messages/s (5 sec avg)", ack_rate);
-        let msg_left =
-            *stats.total_msgs.lock().await - *stats.total_inc.lock().await;
-        let catchup_eta = msg_left / ack_rate as i64;
+        let msg_left = *stats.total_msgs.lock().await - *stats.total_inc.lock().await;
+        let catchup_eta = msg_left / (ack_rate as i64 + 1);
         if msg_left >= 300 {
             info!("Catch-up ETA: {} minutes", catchup_eta / 60);
         }

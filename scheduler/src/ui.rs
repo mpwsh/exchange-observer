@@ -1,6 +1,6 @@
 use crate::app::App;
-use crate::models::Account;
 use crate::models::Candlestick;
+use crate::Account;
 use crate::AppConfig;
 use crate::Result;
 use crate::TokenStatus;
@@ -158,7 +158,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             }
             table_instids.add_row(token_row);
         }
-        for i in app.tokens.len()..cfg.strategy.top {
+        for _ in app.tokens.len()..cfg.strategy.top {
             let token_row: Vec<Cell> = Vec::new();
             table_instids.add_row(token_row);
         }
@@ -173,7 +173,8 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             .set_content_arrangement(ContentArrangement::Disabled)
             .set_width(250)
             .set_header(vec![
-                "Symbol", "Candles", "Price", "Balance", "Change", "Earnings", "Timeout", "Status",
+                "Symbol", "Candles", "LastCand", "Std Dev", "Price", "Balance", "Change",
+                "Earnings", "Timeout", "Status",
             ]);
         //print token rows
         for t in account.portfolio.iter() {
@@ -193,6 +194,40 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .set_delimiter('.')
                     .add_attribute(Attribute::Fraktur),
             );
+            //Last candle
+            let blank = Candlestick::new();
+            let last = t.candlesticks.last().unwrap_or(&blank);
+            if last.change < 0.00 {
+                token_row.push(
+                    Cell::new(format!("{:.2}%", last.change))
+                        .set_alignment(CellAlignment::Center)
+                        .add_attribute(Attribute::Bold)
+                        .fg(Color::Red),
+                );
+            } else {
+                token_row.push(
+                    Cell::new(format!("{:.2}%", last.change))
+                        .set_alignment(CellAlignment::Center)
+                        .add_attribute(Attribute::Bold)
+                        .fg(Color::Green),
+                );
+            };
+            //standard deviation
+            if t.std_deviation <= 0.00 {
+                token_row.push(
+                    Cell::new(format!("{:.2}%", t.std_deviation))
+                        .set_alignment(CellAlignment::Center)
+                        .add_attribute(Attribute::Bold)
+                        .fg(Color::Red),
+                );
+            } else {
+                token_row.push(
+                    Cell::new(format!("{:.2}%", t.std_deviation))
+                        .set_alignment(CellAlignment::Center)
+                        .add_attribute(Attribute::Bold)
+                        .fg(Color::Green),
+                );
+            };
             //price
             token_row
                 .push(Cell::new(format!("{:.7}", t.price)).set_alignment(CellAlignment::Center));
@@ -304,7 +339,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             table_instids.add_row(token_row);
         }
 
-        for i in account.portfolio.len()..cfg.strategy.portfolio_size as usize {
+        for _ in account.portfolio.len()..cfg.strategy.portfolio_size as usize {
             let token_row: Vec<Cell> = Vec::new();
             table_instids.add_row(token_row);
         }
@@ -400,7 +435,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
         //Strategy Hash
         token_row.push(
-            Cell::new(cfg.strategy.clone().hash.unwrap())
+            Cell::new(&cfg.strategy.hash)
                 .set_alignment(CellAlignment::Center)
                 .fg(Color::DarkGrey),
         );
@@ -499,6 +534,10 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
 
         table_time.add_row(row);
+        tables.push(table_config);
+        tables.push(table_time);
+    }
+    if cfg.ui.deny_list {
         let mut table_denied = Table::new();
         table_denied
             .load_preset(UTF8_FULL)
@@ -509,12 +548,9 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             .set_header(vec!["Deny list"]);
         let mut row: Vec<Cell> = Vec::new();
         row.push(Cell::new(format!("{:?}", app.deny_list)).set_alignment(CellAlignment::Center));
-        table_denied.add_row(row);
-        tables.push(table_config);
-        tables.push(table_time);
+        table_denied.add_row(row); 
         tables.push(table_denied);
     }
-
     if cfg.ui.logs {
         let mut table_logs = Table::new();
         if !app.logs.is_empty() {

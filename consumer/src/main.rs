@@ -7,9 +7,9 @@ use scylla::SessionBuilder;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::{Duration, Instant};
 use stream_throttle::{ThrottlePool, ThrottleRate, ThrottledStream};
+use tokio::sync::Mutex;
 
 use rskafka::client::ClientBuilder;
 
@@ -56,14 +56,14 @@ async fn main() -> Result<()> {
     //stream throttle so we dont crash the db while testing locally
     let rate = ThrottleRate::new(50000, Duration::from_millis(1000));
     let pool = ThrottlePool::new(rate);
- 
+
     let read_future = futures::stream::select_all(streams)
         .throttle(pool)
-        .for_each(|record|{
-        let stats = Arc::clone(&stats);
-        let cfg = cfg.clone();
-        let session = session.clone();
-        async move {
+        .for_each(|record| {
+            let stats = Arc::clone(&stats);
+            let cfg = cfg.clone();
+            let session = session.clone();
+            async move {
                 //retrieve record
                 let (record, _partition_offset) = match record {
                     Ok(k) => (k.0.record, k.0.offset),
@@ -90,7 +90,9 @@ async fn main() -> Result<()> {
                     exchange, channel, payload, cfg.database.data_ttl
                 );
 
-                let stats = mq::update_stats(&session, topic, stats, &cfg).await.unwrap();
+                let stats = mq::update_stats(&session, topic, stats, &cfg)
+                    .await
+                    .unwrap();
                 tokio::task::spawn(async move {
                     match session.query(query.clone(), &[]).await {
                         Ok(k) => {
@@ -101,14 +103,13 @@ async fn main() -> Result<()> {
                         Err(e) => error!("{}", e),
                     };
                 });
-                 let mut inc = stats.inc.lock().await;
-            *inc += 1;
+                let mut inc = stats.inc.lock().await;
+                *inc += 1;
 
-            let mut total_inc = stats.total_inc.lock().await;
-            *total_inc += 1;
-        }}
-        );
+                let mut total_inc = stats.total_inc.lock().await;
+                *total_inc += 1;
+            }
+        });
     read_future.await;
     Ok(())
 }
-

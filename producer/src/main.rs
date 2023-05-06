@@ -1,22 +1,18 @@
 #![feature(async_closure)]
-use anyhow::Result;
-use exchange_observer::{util::Elapsed, AppConfig};
 use crate::ws::WsStream;
+use anyhow::Result;
+pub use cooldown::*;
+use exchange_observer::{util::Elapsed, AppConfig};
+use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
 use rskafka::client::{Client, ClientBuilder};
 use serde_json::Value;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    time::Instant,
-};
-use futures_util::{SinkExt, StreamExt};
+use std::{cell::RefCell, collections::HashMap, time::Instant};
 use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::protocol::Message;
-pub use cooldown::*;
-pub mod ws;
-pub mod mq;
 pub mod cooldown;
+pub mod mq;
+pub mod ws;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,7 +24,7 @@ async fn main() -> Result<()> {
         .build()
         .await?;
     mq::create_topics(&client, &cfg).await?;
-    let not = false;
+
     let mut errors = 0;
     loop {
         let ws_stream = ws::connect_and_subscribe(&cfg).await?;
@@ -36,13 +32,9 @@ async fn main() -> Result<()> {
             Ok(k) => info!("Closing OK?: {:?}", k),
             Err(e) => error!("Connection closed due to {}. Trying to reconnect", e),
         }
-        errors += errors;
+        errors += 1;
         error!("Disconnect count: {errors}");
-        if not {
-            break;
-        }
     }
-    Ok(())
 }
 
 async fn run(client: &Client, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
@@ -99,7 +91,3 @@ async fn run(client: &Client, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
     read_future.await;
     Ok(())
 }
-
-
-
-

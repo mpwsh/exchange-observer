@@ -1,7 +1,9 @@
-use crate::{Duration, FromRow, Result, Utc};
-use exchange_observer::Strategy;
+use crate::{account::Balance, Duration, FromRow, Result, Utc, BASE_URL, ORDERS_ENDPOINT};
+use exchange_observer::{Authentication, OffsetDateTime};
 use serde_derive::{Deserialize, Serialize};
 use std::str::FromStr;
+use uuid::Uuid;
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum TokenStatus {
     Buy,
@@ -59,23 +61,42 @@ pub struct Token {
     pub change: f32,
     pub std_deviation: f32,
     pub range: f32,
-    pub vol: f32,
-    pub vol24h: f32,
+    pub vol: f64,
+    pub vol24h: f64,
     pub change24h: f32,
     pub range24h: f32,
-    pub px: f32,
+    pub px: f64,
     pub buys: i64,
     pub sells: i64,
     pub cooldown: Duration,
     pub candlesticks: Vec<Candlestick>,
 }
+
+#[derive(Debug, Clone)]
+pub struct Selected {
+    pub round_id: u64,
+    pub instid: String,
+    pub buy_price: f64,
+    pub price: f64,
+    pub change: f32,
+    pub std_deviation: f32,
+    pub timeout: Duration,
+    pub balance: Balance,
+    pub earnings: f64,
+    pub status: TokenStatus,
+    pub candlesticks: Vec<Candlestick>,
+    pub config: SelectedConfig,
+    pub order: TradeOrder,
+    pub report: Report,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
     pub round_id: u64,
     pub instid: String,
-    pub buy_price: f32,
-    pub sell_price: f32,
-    pub earnings: f32,
+    pub buy_price: f64,
+    pub sell_price: f64,
+    pub earnings: f64,
     pub reason: String,
     pub highest: f32,
     pub highest_elapsed: i64,
@@ -92,49 +113,38 @@ pub struct SelectedConfig {
     pub sell_floor: f32,
     pub timeout: Duration,
 }
-#[derive(Debug, Clone)]
-pub struct Account {
-    pub name: String,
-    pub balance: Balance,
-    pub earnings: f32,
-    pub fee_spend: f32,
-    pub change: f32,
-    pub deny_list: Vec<String>,
-    pub portfolio: Vec<Selected>,
-}
 
-#[derive(Debug, Clone)]
-pub struct Balance {
-    pub start: f32,
-    pub current: f32,
-    pub available: f32,
-    pub spendable: f32,
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename(serialize = "snake_case", deserialize = "camelCase"))]
 pub struct TradeOrder {
-    pub instid: String,
+    pub ord_id: String,
+    pub inst_id: String,
     pub td_mode: String,
-    pub cl_ord_id: Option<String>,
+    pub cl_ord_id: String,
     pub side: String,
     pub ord_type: String,
     pub px: String,
     pub sz: String,
+    pub ts: String,
+    pub strategy: String,
+    #[serde(skip_serializing)]
+    pub response: Option<OkxApiResponse>,
 }
-#[derive(Debug, Clone)]
-pub struct Selected {
-    pub round_id: u64,
-    pub instid: String,
-    pub buy_price: f32,
-    pub price: f32,
-    pub change: f32,
-    pub timeout: Duration,
-    pub balance: Balance,
-    pub earnings: f32,
-    pub status: TokenStatus,
-    pub candlesticks: Vec<Candlestick>,
-    pub config: SelectedConfig,
-    pub report: Report,
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OkxApiResponse {
+    pub code: String,
+    pub data: Vec<OrderResponse>,
+    pub msg: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderResponse {
+    pub cl_ord_id: String,
+    pub ord_id: String,
+    pub s_code: String,
+    pub s_msg: String,
+    pub tag: String,
 }
 
 #[derive(FromRow, Debug, Clone)]
@@ -142,74 +152,14 @@ pub struct Candlestick {
     pub instid: String,
     pub ts: Duration,
     pub change: f32,
-    pub close: f32,
-    pub high: f32,
-    pub low: f32,
-    pub open: f32,
+    pub close: f64,
+    pub high: f64,
+    pub low: f64,
+    pub open: f64,
     pub range: f32,
-    pub vol: f32,
+    pub vol: f64,
 }
-impl Account {
-    pub fn new() -> Self {
-        Self {
-            name: String::new(),
-            change: 0.00,
-            balance: Balance {
-                start: 0.00,
-                current: 0.00,
-                available: 0.00,
-                spendable: 0.00,
-            },
-            fee_spend: 0.0,
-            deny_list: Vec::new(),
-            earnings: 0.00,
-            portfolio: Vec::new(),
-        }
-    }
-    pub fn calculate_balance(&mut self) -> &mut Self {
-        self.portfolio.iter().for_each(|t| {
-            self.balance.current += t.price * t.balance.current;
-        });
-        self.balance.current += self.balance.available;
-        self
-    }
 
-    pub fn calculate_earnings(&mut self) -> &mut Self {
-        self.earnings = self.balance.current - self.balance.start;
-        self
-    }
-
-    pub fn setup_balance(&mut self, balance: f32, spendable: f32) -> &mut Self {
-        self.balance.setup(balance, spendable);
-        self
-    }
-
-    pub fn token_cleanup(&mut self) -> &Self {
-        if let Some(pos) = self
-            .portfolio
-            .iter()
-            //remove marked as selling
-            //.position(|s| instid == s.instid && (s.price * s.balance.available < 10.0))
-            .position(|t| t.status == TokenStatus::Selling)
-        {
-            let token = self.portfolio.remove(pos);
-        }
-        self
-    }
-    pub fn add_token(&mut self, token: &Token, strategy: &Strategy) -> &Self {
-        if self.balance.available >= self.balance.spendable
-            && self.portfolio.len() < strategy.portfolio_size as usize
-        {
-            let mut s = Selected::new(&token.instid);
-            s.price = token.px;
-            s.candlesticks = token.candlesticks.clone();
-            s.status = TokenStatus::Buy;
-            s.buy_price = token.px;
-            self.portfolio.push(s);
-        }
-        self
-    }
-}
 impl Token {
     pub fn new(instid: String, cooldown: i64) -> Self {
         Self {
@@ -264,6 +214,7 @@ impl Selected {
             instid: instid.to_string(),
             buy_price: 0.0,
             price: 0.0,
+            std_deviation: 0.0,
             balance: Balance {
                 current: 0.0,
                 start: 0.0,
@@ -275,66 +226,117 @@ impl Selected {
             config: SelectedConfig::default(),
             change: 0.00,
             candlesticks: Vec::new(),
+            order: TradeOrder::default(),
             report: Report::default(),
             status: TokenStatus::Waiting,
         }
     }
-    pub async fn buy(&mut self) -> Result<&Self> {
+    pub async fn buy(
+        &mut self,
+        trade_enabled: bool,
+        auth: Authentication,
+        strategy: &str,
+    ) -> Result<&Self> {
         self.status = TokenStatus::Buying;
 
-        let order = TradeOrder::new(
+        self.order = TradeOrder::new(
             &self.instid,
-            "buy",
-            self.balance.start.to_string(),
+            &self.status,
             self.buy_price.to_string(),
+            self.balance.start.to_string(),
+            strategy,
         );
-        /*
-        let trade: TradeOrder = reqwest::Client::new()
-            .post("https://jsonplaceholder.typicode.com/posts")
-            .json(&order)
-            .send()
-            .await?
-            .json()
-            .await?;
-        log::info!("{:?}", trade);
-        */
+        let json_body = serde_json::to_string(&self.order)?;
+
+        if trade_enabled {
+            let signed = auth.sign(
+                "POST",
+                ORDERS_ENDPOINT,
+                OffsetDateTime::now_utc(),
+                false,
+                &json_body,
+            )?;
+            //let exp_time = self.timeout.num_milliseconds() + signed.timestamp.parse::<i64>()?;
+            let res = reqwest::Client::new()
+                .post(format!("{BASE_URL}{ORDERS_ENDPOINT}"))
+                .header("OK-ACCESS-KEY", auth.access_key)
+                .header("OK-ACCESS-PASSPHRASE", auth.passphrase)
+                .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
+                .header("OK-ACCESS-SIGN", signed.signature.as_str())
+                //   .header("expTime", exp_time)
+                .json(&self.order)
+                .send()
+                .await?;
+
+            if res.status().is_success() {
+                let order_response = res.json::<OkxApiResponse>().await;
+                if order_response.is_ok() {
+                    let res = order_response.unwrap();
+                    self.order.response = Some(res.clone());
+                    self.order.ord_id = res.data[0].ord_id.clone();
+                } else {
+                    self.order.response = None;
+                    log::error!("{:?}", order_response);
+                };
+            } else {
+                let body = res.text().await?;
+                log::error!("{}", body);
+            };
+        }
         self.status = TokenStatus::Trading;
         Ok(self)
     }
-    pub async fn sell(&mut self) -> Result<&Self> {
-        let order = TradeOrder::new(
+
+    pub async fn sell(
+        &mut self,
+        trade_enabled: bool,
+        auth: Authentication,
+        strategy: &str,
+    ) -> Result<&Self> {
+        self.order = TradeOrder::new(
             &self.instid,
-            "sell",
-            self.balance.start.to_string(),
+            &self.status,
             self.price.to_string(),
+            self.balance.current.to_string(),
+            strategy,
         );
-        /*
-        let trade: TradeOrder = reqwest::Client::new()
-            .post("https://jsonplaceholder.typicode.com/sell")
-            .json(&order)
-            .send()
-            .await?
-            .json()
-            .await?;
-        log::info!("{:?}", trade);
-            */
+
+        let json_body = serde_json::to_string(&self.order)?;
+        if trade_enabled {
+            let signed = auth.sign(
+                "POST",
+                ORDERS_ENDPOINT,
+                OffsetDateTime::now_utc(),
+                false,
+                &json_body,
+            )?;
+
+            //let exp_time = self.timeout.num_milliseconds() + signed.timestamp.parse::<i64>()?;
+            let res = reqwest::Client::new()
+                .post(format!("{BASE_URL}{ORDERS_ENDPOINT}"))
+                //       .header("expTime", exp_time)
+                .header("OK-ACCESS-KEY", auth.access_key)
+                .header("OK-ACCESS-PASSPHRASE", auth.passphrase)
+                .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
+                .header("OK-ACCESS-SIGN", signed.signature.as_str())
+                .json(&self.order)
+                .send()
+                .await?;
+            if res.status().is_success() {
+                println!("{:?}", res.text().await?);
+            } else {
+                let body = res.text().await?;
+                eprintln!("{}", body);
+
+                // You can decide how to handle the error here, either return a custom error or use a different strategy
+                panic!("Request failed");
+            };
+        }
         self.status = TokenStatus::Selling;
         Ok(self)
     }
 }
-impl Balance {
-    pub fn setup(&mut self, amount: f32, spendable: f32) -> &mut Self {
-        self.start = amount;
-        self.available = amount;
-        self.spendable = spendable;
-        self.available = amount;
-        self
-    }
-    pub fn set_current(&mut self, amount: f32) -> &mut Self {
-        self.current = amount;
-        self
-    }
-}
+
 impl Candlestick {
     pub fn new() -> Self {
         Self {
@@ -351,15 +353,42 @@ impl Candlestick {
     }
 }
 impl TradeOrder {
-    pub fn new(instid: &str, side: &str, price: String, size: String) -> Self {
+    pub fn new(
+        instid: &str,
+        status: &TokenStatus,
+        price: String,
+        size: String,
+        strategy: &str,
+    ) -> Self {
+        let side = match status {
+            TokenStatus::Buying => "buy",
+            TokenStatus::Buy => "buy",
+            TokenStatus::Selling => "sell",
+            TokenStatus::Sell => "sell",
+            TokenStatus::Waiting | TokenStatus::Trading => {
+                panic!("Token entered trade mode in Trading/Waiting State. this should not happen")
+            }
+        };
+        let ord_type = match status {
+            TokenStatus::Buying => "limit",
+            TokenStatus::Buy => "limit",
+            TokenStatus::Selling => "market",
+            TokenStatus::Sell => "market",
+            _ => "limit",
+        };
+
         Self {
-            instid: instid.to_string(),
+            cl_ord_id: Uuid::new_v4().hyphenated().to_string().replace('-', ""),
+            ord_id: String::from("Simulated"),
+            inst_id: instid.to_string(),
             td_mode: String::from("cash"),
-            cl_ord_id: None,
             side: side.to_string(),
-            ord_type: String::from("limit"),
+            ord_type: ord_type.to_string(),
             px: price,
             sz: size,
+            strategy: strategy.to_string(),
+            response: None,
+            ts: Utc::now().timestamp_millis().to_string(),
         }
     }
 }

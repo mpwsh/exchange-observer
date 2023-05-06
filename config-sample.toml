@@ -1,82 +1,101 @@
+[account]
+#Total Available balance (Add a bit more for trade fees)
+balance=100.0
+#USDT to use to buy per selected token (can this be tied to current volume to avoid moving the candle too much?
+spendable=20.0
+
+[exchange]
+name="okx"
+## Enable/disable trading on exchange
+enable_trading=false
+#From okx fees: https://www.okx.com/fees
+taker_fee=0.10
+maker_fee=0.08
+
+[exchange.authentication]
+access_key=""
+secret_key=""
+passphrase=""
+
+[strategy]
+#Scan for the top (x) tokens
+top=5
+#Work with (x) amount of tokens at the same time
+portfolio_size=4
+
+#Block following tokens
+#deny_list=["TAMA", "SKEB", "CTC", "DEVT","BNT"]
+
+#retrieve last(x) minutes of candlesticks to analyze the performance of tokens
+timeframe=4
+#time to wait before adding tokens to portfolio
+cooldown=3
+#Dont wait for cooldown on first round (set to false when using blank database)
+quickstart=true
+#Min vol to be elegible (a sane default is: timeframe * 1600 to avoid tokens with high volatility in short periods of time)
+min_vol=15000.0
+#Min change to be elegible
+min_change=0.1
+#Last candle should be at least this much to be eligible
+min_change_last_candle=0.01
+#Min standard deviation on selected timeframe. (std deviation coming from sum of all candles)
+min_deviation=0.01
+#sell if losing more than (x) % (optional. Will sell if token is not in top tokens when cooldown finishes)
+stoploss=3.0
+#Sell if earnings on selected token are above (x)%.
+cashout=2.0 #token will be bought back with spendable balance if is still selected
+#Only sell tokens from portfolio if earnings are above (x)%
+sell_floor=0.5
+#sell if timeout is reached, even if 'sell_above' was not met
+timeout=120
+#Avoid trading a token if stoploss was triggered
+avoid_after_stoploss=true
+
+[ui]
+dashboard=true
+portfolio=true
+deny_list=false
+balance=true
+debug=true
+logs=true
+
+[pushover]
+enable=false
+token="a8s2c5z9ny94rkbptex99442te62az"
+key="ug4ffzon247uk17hb2dv4orzeqypfx"
+
+[server]
+#websocket server (not implemented yet)
+enable=false
+listen_address="0.0.0.0"
+#Possible values -- debug, info, warn, error
+log_level = "debug"
+#port for the server to listen on
+port = 3030
+#CPU Threads for actix
+workers = 8
+
 [database]
 #Scylla or Cassandra
-ip="127.0.0.1"
-#ip="127.0.0.1"
+ip="192.168.1.31"
+#ip="192.168.1.31"
 port=9042
 workers=8
 keyspace="okx"
 #Retention policy, in seconds
 data_ttl=7200 # 2 hours
 
-[account]
-#Only okx supported for now
-exchange="okx"
-#api_key=asd
-#api_token=asd
-#From okx fees: https://www.okx.com/fees
-taker_fee=0.1
-#Total Available balance (Add a bit more for trade fees)
-balance=15000
-#USDT to use to buy per selected token (can this be tied to current volume to avoid moving the candle too much?
-spendable=200
-
-[strategy]
-#Scan for the top (x) tokens
-top=10
-#Work with (x) amount of tokens at the same time
-portfolio_size=8
-#Block following tokens
-#deny_list=["BTC", "ETH", "USTC", "UST", "LUNC", "BABYDOGE", "YFI", "ADA", "WAXP", "CVC", "GMT", "WAVES", "ROAD", "REP", "OP", "ANC", "LOOKS", "IOST", "SNT", "ELF", "BTT", "BRWL", "ANC", "MIR", "ROAD", "FORTH", "CVC", "GLM", "ELF", "PHA", "ONT", "OP", "EGLD", "APIX", "INX", "QOM", "GOG", "XETA"]
-#deny_list=["TAMA", "SKEB", "CTC", "DEVT","BNT"]
-#deny_list=["BTC","ETH", "MAGIC"]
-
-#retrieve last(x) minutes of candlesticks to analyze the performance of tokens
-timeframe=5
-#time to wait before adding tokens to portfolio
-cooldown=10
-#Dont wait for cooldown on first round (set to false when using blank database)
-quickstart=true
-#Min vol to be elegible (a sane default is: timeframe * 1600 to avoid tokens with high volatility in short periods of time)
-min_vol=8000
-#Min change to be elegible
-min_change=0.1
-#Min standard deviation on selected timeframe. (std deviation coming from sum of all candles)
-min_deviation=0.01
-#Last candle should be at least this much to be eligible
-min_change_last_candle=0.03
-#sell if losing more than (x) % (optional. Will sell if token is not in top tokens when cooldown finishes)
-stoploss=4.0
-#Sell if earnings on selected token are above (x)%.
-cashout=3.0 #token will be bought back with spendable balance if is still selected
-#Only sell tokens from portfolio if earnings are above (x)%
-sell_floor=0.1
-#sell if timeout is reached, even if 'sell_above' was not met
-timeout=60
-#Avoid trading a token if stoploss was triggered
-avoid_after_stoploss=false
-
-[ui]
-dashboard=true
-portfolio=true
-balance=true
-debug=true
-logs=false
-
-[pushover]
-key="<your-pushover-key>"
-token="<your-pushover-token>"
-
 [mq]
 #Redpanda or Kafka
-ip="127.0.0.1"
-#ip="127.0.0.1"
+ip="192.168.1.31"
+#ip="192.168.1.31"
 port=9092
 
 [[mq.topics]]
 name = "candle1m"
 partitions = 5
 #Offset per topic to start retrieving messages
-offset = 0
+offset = 100000
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -86,7 +105,7 @@ max_wait_ms=500
 name = "tickers"
 partitions = 20
 #Offset per topic to start retrieving messages
-offset = 0
+offset = 100000
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -96,7 +115,7 @@ max_wait_ms=500
 name = "trades"
 partitions = 10
 #Offset per topic to start retrieving messages
-offset = 0
+offset = 80000
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000

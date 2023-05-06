@@ -1,4 +1,4 @@
-use crate::{RefCell, Instant, AppConfig, HashMap, info, Elapsed};
+use crate::{info, AppConfig, Elapsed, HashMap, Instant, RefCell};
 pub struct Cooldowns {
     pub stats: RefCell<Instant>,
     pub ping: RefCell<Instant>,

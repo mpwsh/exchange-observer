@@ -1,10 +1,13 @@
-use crate::models::{Account, Candlestick, Reason, Report, Selected, Token, TokenStatus};
 use crate::utils::*;
+use crate::{
+    models::{Candlestick, Reason, Report, Selected, Token, TokenStatus, TradeOrder},
+    Account,
+};
 use crate::{time::Instant, DateTime, Duration, SecondsFormat, Utc};
 use anyhow::Result;
 use chrono::Timelike;
 use console::Term;
-use exchange_observer::{Pushover, Strategy};
+use exchange_observer::{Exchange, Pushover, Strategy};
 use pushover_rs::{
     send_pushover_request, Message, MessageBuilder, PushoverResponse, PushoverSound,
 };
@@ -12,7 +15,7 @@ use std::str::FromStr;
 
 use crate::AppConfig;
 use scylla::transport::Compression;
-use scylla::{IntoTypedRows, Session, SessionBuilder};
+use scylla::{IntoTypedRows, QueryResult, Session, SessionBuilder};
 use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct App {
@@ -23,10 +26,10 @@ pub struct App {
     pub logs: Vec<String>,
     pub tokens: Vec<Token>,
     pub cooldown: Duration,
-    pub taker_fee: f32,
     pub round_id: u64,
     pub term: Term,
     pub pushover: Pushover,
+    pub exchange: Exchange,
     pub deny_list: Vec<String>,
     pub db_session: Arc<Session>,
 }
@@ -65,6 +68,7 @@ impl App {
             .await
             .unwrap();
         let session = Arc::new(session);
+
         App {
             round_id: 0,
             cycles: 0,
@@ -75,48 +79,63 @@ impl App {
             logs: Vec::new(),
             tokens: Vec::new(),
             deny_list: cfg.strategy.deny_list.clone().unwrap_or_default(),
-            taker_fee: cfg.account.taker_fee,
+            exchange: cfg.exchange.clone().unwrap_or_default(),
             term: Term::stdout(),
-            pushover: cfg.pushover.clone(),
+            pushover: cfg.pushover.clone().unwrap_or_default(),
             db_session: session,
         }
     }
-    pub async fn notify(
-        &self,
-        title: String,
-        msg: String,
-    ) -> Result<PushoverResponse, Box<dyn std::error::Error>> {
-        if let Some(key) = &self.pushover.key {
-            let now = self.time.utc.timestamp();
-            let message: Message =
-                MessageBuilder::new(key, &self.pushover.token.clone().unwrap(), &msg)
-                    .add_title(&title)
-                    //.add_url("https://pushover.net/", Some("Pushover"))
-                    .set_priority(-1)
-                    .set_sound(PushoverSound::GAMELAN)
-                    .set_timestamp(now as u64)
-                    .build();
-
-            send_pushover_request(message).await
-        } else {
-            Ok(PushoverResponse {
-                status: 200,
-                request: String::from("dummy"),
-                user: None,
-                token: None,
-                errors: None,
-            })
+    pub async fn send_notifications(&self, account: &Account, cfg: &AppConfig) -> Result<()> {
+        for t in account.portfolio.iter() {
+            //send notifications
+            if t.change >= cfg.strategy.cashout {
+                self.notify(
+                    "Cashout Triggered".to_string(),
+                    format!(
+                        "Token: {} | Change: %{:.2}\nEarnings: {:.2}\nTime Left: {} secs",
+                        t.instid, t.report.change, t.report.earnings, t.report.time_left,
+                    ),
+                )
+                .await?;
+            }
+            if t.change <= -cfg.strategy.stoploss {
+                self.notify(
+                    "Stoploss Triggered".to_string(),
+                    format!(
+                        "Token: {} | Change: %{:.2}\nLoss: {:.2}\nTime Left: {} secs",
+                        t.instid, t.report.change, t.report.earnings, t.report.time_left,
+                    ),
+                )
+                .await?;
+            };
         }
+        Ok(())
     }
-    pub async fn save_report(&self, report: &Report) {
+    pub async fn notify(&self, title: String, msg: String) -> Result<PushoverResponse> {
+        let now = self.time.utc.timestamp();
+        let message: Message = MessageBuilder::new(&self.pushover.key, &self.pushover.token, &msg)
+            .add_title(&title)
+            //.add_url("https://pushover.net/", Some("Pushover"))
+            .set_priority(-1)
+            .set_sound(PushoverSound::GAMELAN)
+            .set_timestamp(now as u64)
+            .build();
+
+        Ok(send_pushover_request(message).await.unwrap())
+    }
+    pub async fn save_report(&self, report: &Report) -> Result<QueryResult> {
         let payload = serde_json::to_string_pretty(&report).unwrap();
         let payload = payload.replace("null", "0");
         let query = format!("INSERT INTO okx.reports JSON '{}'", payload);
-        self.db_session
-            .query(&*query, &[])
-            .await
-            .unwrap_or_else(|_| panic!("Failed to write msg: {}", payload));
+        Ok(self.db_session.query(&*query, &[]).await?)
     }
+    pub async fn save_trade_order(&self, order: &TradeOrder) -> Result<QueryResult> {
+        let payload = serde_json::to_string_pretty(&order).unwrap();
+        let payload = payload.replace("null", "0");
+        let query = format!("INSERT INTO okx.orders JSON '{}'", payload);
+        Ok(self.db_session.query(&*query, &[]).await?)
+    }
+
     pub async fn update_reports(
         &mut self,
         mut tokens: Vec<Selected>,
@@ -144,8 +163,8 @@ impl App {
                 t.instid,
             );
             if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
-                for row in rows.into_typed::<(f32,)>() {
-                    let (last,): (f32,) = row.unwrap();
+                for row in rows.into_typed::<(f64,)>() {
+                    let (last,): (f64,) = row.unwrap();
                     t.price = last;
                 }
             };
@@ -198,8 +217,8 @@ impl App {
             );
             //self.logs.push(query.clone());
             if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
-                for row in rows.into_typed::<(f32, f32, f32, f32, f32)>() {
-                    let (last, open24h, volccy24h, high24h, low24h): (f32, f32, f32, f32, f32) =
+                for row in rows.into_typed::<(f64, f64, f64, f64, f64)>() {
+                    let (last, open24h, volccy24h, high24h, low24h): (f64, f64, f64, f64, f64) =
                         row.unwrap();
                     t.vol24h = volccy24h;
                     t.change24h = get_percentage_diff(last, open24h);
@@ -251,8 +270,8 @@ impl App {
         });
         self
     }
-    pub fn calculate_fees(&self, amount: f32) -> f32 {
-        amount * (self.taker_fee / 100.0)
+    pub fn calculate_fees(&self, amount: f64, fee: f64) -> f64 {
+        amount * (fee / 100.0)
     }
     pub async fn buy_valid(
         &mut self,
@@ -270,7 +289,7 @@ impl App {
 
         for t in account.portfolio.iter_mut() {
             if t.status == TokenStatus::Buy {
-                let fee = self.calculate_fees(account.balance.spendable);
+                let fee = self.calculate_fees(account.balance.spendable, self.exchange.maker_fee);
                 //Add transaction fee to fee spend
                 account.fee_spend += fee;
                 //will have this amount to buy tokens after deducting fees
@@ -285,7 +304,31 @@ impl App {
                 t.balance.available = t.balance.start;
                 t.balance.spendable = t.balance.start;
 
-                t.buy().await?;
+                let order = t
+                    .buy(
+                        self.exchange.enable_trading,
+                        account.authentication.clone(),
+                        &strategy.hash,
+                    )
+                    .await?
+                    .clone()
+                    .order;
+                self.save_trade_order(&order).await?;
+                let log_line = format!(
+                    "[Order ID: {order_id}] {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    order_id = order.ord_id,
+                    token = t.instid,
+                    side = order.side,
+                    ord_type = order.ord_type,
+                    price = order.px,
+                    size = order.sz,
+                    response = if self.exchange.enable_trading {
+                        order.response.unwrap().data[0].clone().s_msg
+                    } else {
+                        String::from("N/A")
+                    }
+                );
+                self.logs.push(log_line);
                 //create report
                 self.trades += 1;
                 self.round_id += 1;
@@ -297,7 +340,7 @@ impl App {
                 let query = format!(
                 "select count(instid) from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 t.instid,
-                strategy.hash.clone().unwrap(),
+                &strategy.hash
                 );
                 if let Some(rows) = self
                     .db_session
@@ -320,7 +363,7 @@ impl App {
                     let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 t.instid,
-                strategy.hash.clone().unwrap(),
+                strategy.hash,
                 );
                     if let Some(rows) = self
                         .db_session
@@ -343,7 +386,7 @@ impl App {
                     //    Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
                     if t.config.timeout.num_seconds() >= 30 || t.config.sell_floor >= 0.1 {
                         self.logs.push(format!(
-                            "Found reports for {}, using new floor {} and timeout {}",
+                            "[DISABLED] Found reports for {}, using new floor {} and timeout {}",
                             t.instid, t.config.sell_floor, t.config.timeout
                         ));
                         t.timeout = t.config.timeout;
@@ -368,7 +411,7 @@ impl App {
                     round_id: self.round_id,
                     ts: Utc::now().timestamp_millis().to_string(),
                     buy_price: t.price,
-                    strategy: strategy.hash.clone().unwrap(),
+                    strategy: strategy.hash.clone(),
                     change: t.change,
                     highest: t.change,
                     lowest: t.change,
@@ -382,7 +425,12 @@ impl App {
         }
         Ok(account)
     }
-    pub async fn sell_invalid(&mut self, mut account: Account, strategy: &Strategy) -> Account {
+
+    pub async fn sell_invalid(
+        &mut self,
+        mut account: Account,
+        strategy: &Strategy,
+    ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
             let found = self.tokens.iter().any(|s| t.instid == s.instid);
             /*
@@ -431,13 +479,42 @@ impl App {
             }
             if t.status == TokenStatus::Sell {
                 //calculate fees
-                let fee = self.calculate_fees(t.balance.current * t.price);
-                account.fee_spend += fee;
-                let balance_after_fees = (t.balance.current * t.price) - fee;
+                let usdt_balance = t.balance.current * t.price;
+                let usdt_fee = self.calculate_fees(usdt_balance, self.exchange.taker_fee);
+                let token_fees = self.calculate_fees(t.balance.current, self.exchange.taker_fee);
+                let token_balance_after_fees = t.balance.current - token_fees;
+                account.fee_spend += usdt_fee;
+                let balance_after_fees = usdt_balance - usdt_fee;
                 let earnings = balance_after_fees - (t.balance.start * t.buy_price);
                 account.balance.available += balance_after_fees;
+                t.balance.current = token_balance_after_fees;
 
-                t.sell().await.unwrap();
+                let order = t
+                    .sell(
+                        self.exchange.enable_trading,
+                        account.authentication.clone(),
+                        &strategy.hash,
+                    )
+                    .await?
+                    .clone()
+                    .order;
+                self.save_trade_order(&order).await?;
+                let log_line = format!(
+                    "[Order ID: {order_id}] {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    order_id = order.ord_id,
+                    token = t.instid,
+                    side = order.side,
+                    ord_type = order.ord_type,
+                    price = order.px,
+                    size = order.sz,
+                    response = if self.exchange.enable_trading {
+                        order.response.unwrap().data[0].clone().s_msg
+                    } else {
+                        String::from("N/A")
+                    }
+                );
+                self.logs.push(log_line);
+
                 self.trades += 1;
                 //build up deny list if stoploss
                 if reason == Reason::Stoploss && strategy.avoid_after_stoploss {
@@ -453,7 +530,7 @@ impl App {
                     reason: reason.to_string(),
                     ts: Utc::now().timestamp_millis().to_string(),
                     buy_price: t.price,
-                    strategy: strategy.hash.clone().unwrap(),
+                    strategy: strategy.hash.to_string(),
                     change,
                     sell_price: t.price,
                     earnings,
@@ -463,22 +540,30 @@ impl App {
                 t.report = report;
                 //push log
                 self.logs.push(format!(
-                    "Selling {} - time left: {} - change: % {} - earnings: {} - balance_after_fees: {} - Reason: {}", // - Last 3 candles low?: {}",
+                    "Round report for{} {}: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - Exit Balance: {:.2} - Reason: {}",
+                    if self.exchange.enable_trading {
+                        format!(" order ID: {}", order.ord_id)
+                    } else {
+                        String::from(" ")
+                    },
                     t.instid,
                     t.timeout.num_seconds(),
+                    t.report.highest,
+                    t.report.lowest,
                     t.change,
                     earnings,
                     balance_after_fees,
                     reason.to_string(),
                 ));
 
-                self.save_report(&t.report).await;
+                self.save_report(&t.report).await?;
             }
         }
 
-        account
+        Ok(account)
     }
-    pub fn filter_invalid(&mut self, strategy: &Strategy, spendable: f32) -> &mut Self {
+
+    pub fn filter_invalid(&mut self, strategy: &Strategy, spendable: f64) -> &mut Self {
         //- 24h volume < 800k
         //- < 100*min transactions in selected timeframe
         let mut valid: Vec<Token> = self
@@ -497,6 +582,8 @@ impl App {
                 let blank_candle = Candlestick::new();
                 let last_candle = t.candlesticks.last().unwrap_or(&blank_candle);
                 !denied
+                    //No missing candles in our data
+                    && t.candlesticks.len() >= strategy.timeframe as usize
                     //Half of the candles of our timeframe had more volume than our spendable 
                     && pcc >= strategy.timeframe as usize /2
                     && t.change >= strategy.min_change
@@ -519,7 +606,7 @@ impl App {
     }
     pub fn update_cooldown(&mut self, portfolio: &[Selected]) -> &mut Self {
         for t in self.tokens.iter_mut() {
-            if let Some(x) = portfolio.iter().find(|x| t.instid == x.instid) {
+            if portfolio.iter().any(|x| t.instid == x.instid) {
                 t.cooldown = self.cooldown
             } else {
                 t.cooldown = t.cooldown - self.time.elapsed
@@ -570,6 +657,13 @@ impl App {
             }
             t.candlesticks
                 .retain(|c| c.ts >= Duration::milliseconds(dt.timestamp_millis()));
+            let changes: Vec<f32> = t
+                .candlesticks
+                .clone()
+                .into_iter()
+                .map(|x| x.change)
+                .collect();
+            t.std_deviation = std_deviation(&changes).unwrap_or(0.0);
         }
 
         tokens

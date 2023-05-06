@@ -4,10 +4,11 @@ A trading simulator for OKX exchange. Reads OKX websocket data and tries to make
 
 ## Disclaimer
 
-The trading simulation logic implemented is super rough and kinda dumb (im still experimenting with it tho).
+The trading simulation logic implemented is super rough and kinda dumb (im still _experimenting_ with it tho).
 The `scheduler` will try to follow the line going up, by querying all tokens and buying whatever one is doing good numbers.
-I'm just sharing this because i think its a good template to quickly setup a `producer` -> `consumer` -> `app` infra.
-That being said, im **not responsible** if you lose money by connecting on an real trading exchange API.
+I'm just sharing this because i think its a good template to start with a stream based: `producer` -> `consumer` -> `app` architecture. (not event driven, at least for now)
+
+That being said, im **not responsible** if you lose money by using it to trade with money.
 
 Each setting in [config.toml](config-sample.toml) is explained but feel free open an issue to ask questions if something is not clear.
 

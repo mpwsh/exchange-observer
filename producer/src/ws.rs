@@ -1,17 +1,12 @@
-use exchange_observer::{AppConfig, models::*};
-use tokio::{net::TcpStream, task};
-use crate::{
-    Client,
-    mq::send_message,
-    Result,
-    RefCell,
-};
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use crate::{mq::send_message, Client, RefCell, Result};
 use crypto_market_type::MarketType;
 use crypto_markets::fetch_symbols;
+use exchange_observer::{models::*, AppConfig};
 use log::info;
 use native_tls::TlsConnector;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use tokio::{net::TcpStream, task};
 use tokio_tungstenite::{
     connect_async_tls_with_config, tungstenite::protocol::Message,
     tungstenite::protocol::WebSocketConfig, Connector, MaybeTlsStream, WebSocketStream,
@@ -31,7 +26,6 @@ pub struct WsStream {
     pub read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
 }
-
 
 pub fn build_args(channels: Vec<String>, pairs: Vec<String>) -> Vec<SubArg> {
     let mut args: Vec<SubArg> = Vec::new();

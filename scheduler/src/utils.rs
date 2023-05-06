@@ -1,4 +1,4 @@
-pub fn get_percentage_diff(high: f32, low: f32) -> f32 {
+pub fn get_percentage_diff(high: f64, low: f64) -> f32 {
     let range = high - low;
     format!("{:.2}", (range / low) * 100.00).parse().unwrap()
 }

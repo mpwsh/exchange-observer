@@ -1,4 +1,4 @@
-use crate::{Result, Value, error, RefCell, info, warn};
+use crate::{error, info, warn, RefCell, Result, Value};
 use exchange_observer::{models::*, AppConfig};
 use rskafka::{
     client::{partition::Compression, Client},
@@ -7,7 +7,7 @@ use rskafka::{
     topic::Topic,
 };
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use time::OffsetDateTime;
 
 pub async fn produce(topic: &str, partition: i32, client: &Client, record: Record) -> Result<()> {
@@ -100,5 +100,3 @@ pub async fn send_message(
         .expect("failed to produce message");
     Ok(())
 }
-
-

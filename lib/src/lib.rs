@@ -1,17 +1,26 @@
-use serde_derive::{Deserialize, Serialize};
-use std::net::Ipv4Addr;
-use std::env;
-use log::debug;
 use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
+use hmac::{Hmac, Mac};
+use log::debug;
+use serde_derive::{Deserialize, Serialize};
+use sha2::Sha256;
+use std::env;
+use std::net::Ipv4Addr;
+use thiserror::Error;
+pub use time::{error::Format, format_description::well_known::Rfc3339, OffsetDateTime};
 pub mod models;
 pub mod util;
+
+type HmacSha256 = Hmac<Sha256>;
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub database: Database,
     pub mq: MessageQueue,
     pub account: Account,
-    pub pushover: Pushover,
+    pub pushover: Option<Pushover>,
     pub strategy: Strategy,
+    pub exchange: Option<Exchange>,
     pub ui: Ui,
     pub server: Option<Server>,
 }
@@ -25,8 +34,9 @@ pub struct Database {
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Pushover {
-    pub token: Option<String>,
-    pub key: Option<String>,
+    pub enable: bool,
+    pub token: String,
+    pub key: String,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageQueue {
@@ -47,22 +57,36 @@ pub struct Topic {
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Account {
-    pub exchange: Option<String>,
-    pub api_key: Option<String>,
-    pub api_token: Option<String>,
-    pub balance: u32,
-    pub taker_fee: f32,
-    pub spendable: u32,
+    pub balance: f64,
+    pub spendable: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Exchange {
+    pub enable_trading: bool,
+    pub name: String,
+    pub authentication: Authentication,
+    pub taker_fee: f64,
+    pub maker_fee: f64,
+}
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct Authentication {
+    pub access_key: String,
+    pub secret_key: String,
+    pub passphrase: String,
+    #[serde(skip_deserializing, skip_serializing)]
+    pub signature: Signature,
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Strategy {
-    pub hash: Option<String>,
+    #[serde(skip_deserializing)]
+    pub hash: String,
     pub top: usize,
     pub portfolio_size: u32,
     pub timeframe: i64,
     pub cooldown: i64,
     pub timeout: i64,
-    pub min_vol: Option<f32>,
+    pub min_vol: Option<f64>,
     pub min_change: f32,
     pub min_change_last_candle: f32,
     pub min_deviation: f32,
@@ -78,6 +102,7 @@ pub struct Ui {
     pub dashboard: bool,
     pub portfolio: bool,
     pub debug: bool,
+    pub deny_list: bool,
     pub balance: bool,
     pub logs: bool,
 }
@@ -89,13 +114,31 @@ pub struct Server {
     pub log_level: String,
     pub workers: u8,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Signature {
+    #[serde(rename = "sign")]
+    pub signature: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Error)]
+pub enum SignError {
+    #[error("format timestamp error: {0}")]
+    FormatTimestamp(#[from] Format),
+    #[error("convert timestamp error: {0}")]
+    ConvertTimestamp(#[from] time::error::ComponentRange),
+    #[error("secretkey length error")]
+    SecretKeyLength,
+}
 impl AppConfig {
     fn default() -> Self {
         Self {
             database: Database::default(),
             mq: MessageQueue::default(),
             account: Account::default(),
-            pushover: Pushover::default(),
+            pushover: None,
+            exchange: None,
             strategy: Strategy::default(),
             ui: Ui::default(),
             server: None,
@@ -104,7 +147,8 @@ impl AppConfig {
     pub fn load() -> Result<Self> {
         let path = env::current_dir()?;
         debug!("The current directory is {}", path.display());
-        let config_path = env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
+        let config_path =
+            env::var("CONFIG_PATH").unwrap_or(format!("{}/config.toml", path.display()));
         env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
         let cfg = confy::load_path(config_path).unwrap_or_else(|e| {
             log::error!("Loading default config due to:\n{}", e);
@@ -123,6 +167,36 @@ impl Default for Database {
             //1 day
             data_ttl: (3600 * 24),
         }
+    }
+}
+impl Authentication {
+    // Code from: Nouzan
+    // https://github.com/Nouzan/exc/blob/main/exc-okx/src/key.rs
+    pub fn sign(
+        &self,
+        method: &str,
+        uri: &str,
+        timestamp: OffsetDateTime,
+        use_unix_timestamp: bool,
+        body: &str,
+    ) -> Result<Signature, SignError> {
+        let secret = self.secret_key.clone();
+        let timestamp = timestamp.replace_millisecond(timestamp.millisecond())?;
+        let timestamp = if use_unix_timestamp {
+            timestamp.unix_timestamp().to_string()
+        } else {
+            timestamp.format(&Rfc3339)?
+        };
+        let raw_sign = timestamp.clone() + method + uri + body;
+        debug!("message to sign: {}", raw_sign);
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            .map_err(|_| SignError::SecretKeyLength)?;
+        mac.update(raw_sign.as_bytes());
+
+        Ok(Signature {
+            signature: general_purpose::STANDARD.encode(mac.finalize().into_bytes()),
+            timestamp,
+        })
     }
 }
 
@@ -149,15 +223,14 @@ impl Default for Topic {
     }
 }
 
-impl Account {
+impl Default for Exchange {
     fn default() -> Self {
         Self {
-            exchange: None,
-            api_key: None,
-            api_token: None,
-            balance: 700,
+            name: String::from("okx"),
+            enable_trading: false,
+            authentication: Authentication::default(),
             taker_fee: 0.1,
-            spendable: 100,
+            maker_fee: 0.08,
         }
     }
 }
@@ -165,13 +238,13 @@ impl Strategy {
     fn default() -> Self {
         let timeframe = 5;
         Self {
-            hash: None,
+            hash: String::new(),
             top: 5,
             portfolio_size: 5,
             timeframe,
             cooldown: 40,
             timeout: 40,
-            min_vol: Some((timeframe * 3500) as f32),
+            min_vol: Some((timeframe * 3500) as f64),
             min_change: 0.1,
             min_change_last_candle: 0.1,
             min_deviation: 0.1,
@@ -184,15 +257,13 @@ impl Strategy {
         }
     }
     pub fn sane_defaults(&mut self) -> &mut Self {
-        self.min_vol.unwrap_or((self.timeframe * 3500) as f32);
+        self.min_vol.unwrap_or((self.timeframe * 3500) as f64);
         self
     }
-    pub fn get_hash(&self) -> Option<String> {
-        Some(
-            sha1_smol::Sha1::from(serde_json::to_string_pretty(&self).unwrap())
-                .digest()
-                .to_string(),
-        )
+    pub fn get_hash(&self) -> String {
+        sha1_smol::Sha1::from(serde_json::to_string_pretty(&self).unwrap())
+            .digest()
+            .to_string()
     }
 }
 impl Ui {
@@ -202,6 +273,7 @@ impl Ui {
             portfolio: true,
             debug: true,
             balance: true,
+            deny_list: true,
             logs: true,
         }
     }
