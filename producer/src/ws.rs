@@ -53,11 +53,11 @@ pub async fn connect_and_subscribe(cfg: &AppConfig) -> Result<WsStream> {
     let (ws_stream, _response) = connect_async_tls_with_config(
         url,
         Some(ws_config),
-        //Some(WebSocketConfig::default()),
         Some(Connector::NativeTls(TlsConnector::new()?)),
     )
     .await?;
     info!("WebSocket handshake has been successfully completed");
+
     let (mut write, read) = ws_stream.split();
 
     //send subscribe msg to exchange

@@ -68,7 +68,7 @@ async fn run(client: &Client, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
                 Vec::new()
             }
         };
-        //Send ping every 25 secs to keep connection alive
+
         if cooldowns.ping.borrow().elapsed().as_millis() >= 25000 {
             if let Err(e) = tx.send(true) {
                 error!("{}", e);
