@@ -1,5 +1,8 @@
-use crate::models::{Selected, Token, TokenStatus};
-use exchange_observer::{Authentication, Strategy};
+use crate::{
+    models::{Selected, Token, TokenStatus, TradeOrderState},
+    utils::calculate_fees,
+};
+use exchange_observer::{Authentication, Exchange, Strategy};
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -41,10 +44,24 @@ impl Account {
     }
     pub fn calculate_balance(&mut self) -> &mut Self {
         self.portfolio.iter().for_each(|t| {
-            self.balance.current += t.price * t.balance.current;
+            if t.status == TokenStatus::Trading {
+                self.balance.current += t.price * t.balance.current;
+            }
         });
         self.balance.current += self.balance.available;
         self
+    }
+
+    pub fn deduct_fees(&mut self, exchange: &Exchange) {
+        for t in self.portfolio.iter_mut() {
+            if t.order.state == TradeOrderState::Filled && !t.fees_deducted {
+                let fee = calculate_fees(self.balance.spendable, exchange.maker_fee);
+                //Add transaction fee to fee spend
+                self.fee_spend += fee;
+
+                t.fees_deducted = true;
+            }
+        }
     }
 
     pub fn calculate_earnings(&mut self) -> &mut Self {

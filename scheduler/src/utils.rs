@@ -31,3 +31,7 @@ pub fn std_deviation(data: &[f32]) -> Option<f32> {
         _ => None,
     }
 }
+
+pub fn calculate_fees(amount: f64, fee: f64) -> f64 {
+    amount * (fee / 100.0)
+}

@@ -1,4 +1,4 @@
-use crate::{account::Balance, Duration, FromRow, Result, Utc, BASE_URL, ORDERS_ENDPOINT};
+use crate::{account::Balance, okx::*, Duration, FromRow, Result, Utc, BASE_URL, ORDERS_ENDPOINT};
 use exchange_observer::{Authentication, OffsetDateTime};
 use serde_derive::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -84,6 +84,7 @@ pub struct Selected {
     pub balance: Balance,
     pub earnings: f64,
     pub status: TokenStatus,
+    pub fees_deducted: bool,
     pub candlesticks: Vec<Candlestick>,
     pub config: SelectedConfig,
     pub order: TradeOrder,
@@ -126,25 +127,43 @@ pub struct TradeOrder {
     pub px: String,
     pub sz: String,
     pub ts: String,
+    #[serde(skip_serializing)]
+    pub state: TradeOrderState,
     pub strategy: String,
     #[serde(skip_serializing)]
-    pub response: Option<OkxApiResponse>,
-}
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OkxApiResponse {
-    pub code: String,
-    pub data: Vec<OrderResponse>,
-    pub msg: String,
+    pub response: Option<OkxOrderResponse>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrderResponse {
-    pub cl_ord_id: String,
-    pub ord_id: String,
-    pub s_code: String,
-    pub s_msg: String,
-    pub tag: String,
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
+pub enum TradeOrderState {
+    #[default]
+    Live,
+    PartiallyFilled,
+    Cancelled,
+    Filled,
+}
+impl ToString for TradeOrderState {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Live => "Live".to_string(),
+            Self::PartiallyFilled => "Partially Filled".to_string(),
+            Self::Filled => "Filled".to_string(),
+            Self::Cancelled => "Cancelled".to_string(),
+        }
+    }
+}
+impl FromStr for TradeOrderState {
+    type Err = ();
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let lower = input.to_lowercase().replace('"', "");
+        match lower.as_ref() {
+            "live" => Ok(Self::Live),
+            "partially_filled" => Ok(Self::PartiallyFilled),
+            "filled" => Ok(Self::Filled),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(FromRow, Debug, Clone)]
@@ -222,6 +241,7 @@ impl Selected {
                 spendable: 0.0,
             },
             earnings: 0.00,
+            fees_deducted: false,
             timeout: Duration::seconds(0),
             config: SelectedConfig::default(),
             change: 0.00,
@@ -230,6 +250,59 @@ impl Selected {
             report: Report::default(),
             status: TokenStatus::Waiting,
         }
+    }
+    pub async fn get_order_state(
+        &mut self,
+        trade_enabled: bool,
+        auth: &Authentication,
+    ) -> Result<(TradeOrderState, String)> {
+        let ord_id = &self.order.ord_id;
+        let inst_id = &self.instid;
+        let query = &format!("?ordId={ord_id}&instId={inst_id}");
+        let (mut order_state, mut response) = (TradeOrderState::Live, String::new());
+        if trade_enabled {
+            let signed = auth.sign(
+                "GET",
+                ORDERS_ENDPOINT,
+                OffsetDateTime::now_utc(),
+                false,
+                query,
+            )?;
+
+            let res = reqwest::Client::new()
+                .get(format!("{BASE_URL}{ORDERS_ENDPOINT}{query}"))
+                .header("OK-ACCESS-KEY", &auth.access_key)
+                .header("OK-ACCESS-PASSPHRASE", &auth.passphrase)
+                .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
+                .header("OK-ACCESS-SIGN", signed.signature.as_str())
+                .send()
+                .await?
+                .json::<OkxOrderDetailsResponse>()
+                .await?;
+            order_state = TradeOrderState::from_str(&res.data[0].state)
+                .unwrap_or_else(|_| TradeOrderState::from_str("cancelled").unwrap());
+            response = serde_json::to_string(&res)?;
+            /*
+            if res.status().is_success() {
+                let state_response = res.json::<OkxOrderDetailsResponse>().await;
+                match state_response {
+                    Ok(res) => {
+                        let res_state = &res.data[0].state;
+                        match TradeOrderState::from_str(res_state) {
+                            Ok(k) => { order_state = k },
+                            Err(e) => log::error!("Unable to get t{:?} -- {:?}", res, e),
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("{:?}", e)
+                    }
+                };
+            } else {
+                let body = res.text().await?;
+                log::error!("{:?}", body);
+            };*/
+        }
+        Ok((order_state, response))
     }
     pub async fn buy(
         &mut self,
@@ -244,6 +317,7 @@ impl Selected {
             &self.status,
             self.buy_price.to_string(),
             self.balance.start.to_string(),
+            // if using market ord_type (self.balance.start*self.buy_price).to_string(),
             strategy,
         );
         let json_body = serde_json::to_string(&self.order)?;
@@ -256,34 +330,37 @@ impl Selected {
                 false,
                 &json_body,
             )?;
-            //let exp_time = self.timeout.num_milliseconds() + signed.timestamp.parse::<i64>()?;
+            let okx_timestamp = get_time().await?;
+            let exp_time = okx_timestamp + self.timeout.num_milliseconds();
+
             let res = reqwest::Client::new()
                 .post(format!("{BASE_URL}{ORDERS_ENDPOINT}"))
                 .header("OK-ACCESS-KEY", auth.access_key)
                 .header("OK-ACCESS-PASSPHRASE", auth.passphrase)
                 .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
                 .header("OK-ACCESS-SIGN", signed.signature.as_str())
-                //   .header("expTime", exp_time)
+                .header("expTime", exp_time.to_string())
                 .json(&self.order)
                 .send()
                 .await?;
 
             if res.status().is_success() {
-                let order_response = res.json::<OkxApiResponse>().await;
-                if order_response.is_ok() {
-                    let res = order_response.unwrap();
-                    self.order.response = Some(res.clone());
-                    self.order.ord_id = res.data[0].ord_id.clone();
-                } else {
-                    self.order.response = None;
-                    log::error!("{:?}", order_response);
+                let order_response = res.json::<OkxOrderResponse>().await;
+                match order_response {
+                    Ok(res) => {
+                        self.order.response = Some(res.clone());
+                        self.order.ord_id = res.data[0].ord_id.clone();
+                    }
+                    Err(e) => {
+                        self.order.response = None;
+                        log::error!("{:?}", e)
+                    }
                 };
             } else {
                 let body = res.text().await?;
                 log::error!("{}", body);
             };
         }
-        self.status = TokenStatus::Trading;
         Ok(self)
     }
 
@@ -311,10 +388,8 @@ impl Selected {
                 &json_body,
             )?;
 
-            //let exp_time = self.timeout.num_milliseconds() + signed.timestamp.parse::<i64>()?;
             let res = reqwest::Client::new()
                 .post(format!("{BASE_URL}{ORDERS_ENDPOINT}"))
-                //       .header("expTime", exp_time)
                 .header("OK-ACCESS-KEY", auth.access_key)
                 .header("OK-ACCESS-PASSPHRASE", auth.passphrase)
                 .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
@@ -323,13 +398,20 @@ impl Selected {
                 .send()
                 .await?;
             if res.status().is_success() {
-                println!("{:?}", res.text().await?);
+                let order_response = res.json::<OkxOrderResponse>().await;
+                match order_response {
+                    Ok(res) => {
+                        self.order.response = Some(res.clone());
+                        self.order.ord_id = res.data[0].ord_id.clone();
+                    }
+                    Err(e) => {
+                        self.order.response = None;
+                        log::error!("{:?}", e)
+                    }
+                };
             } else {
                 let body = res.text().await?;
-                eprintln!("{}", body);
-
-                // You can decide how to handle the error here, either return a custom error or use a different strategy
-                panic!("Request failed");
+                log::error!("{}", body);
             };
         }
         self.status = TokenStatus::Selling;
@@ -361,20 +443,16 @@ impl TradeOrder {
         strategy: &str,
     ) -> Self {
         let side = match status {
-            TokenStatus::Buying => "buy",
-            TokenStatus::Buy => "buy",
-            TokenStatus::Selling => "sell",
-            TokenStatus::Sell => "sell",
+            TokenStatus::Buying | TokenStatus::Buy => "buy",
+            TokenStatus::Selling | TokenStatus::Sell => "sell",
             TokenStatus::Waiting | TokenStatus::Trading => {
                 panic!("Token entered trade mode in Trading/Waiting State. this should not happen")
             }
         };
         let ord_type = match status {
-            TokenStatus::Buying => "limit",
-            TokenStatus::Buy => "limit",
-            TokenStatus::Selling => "market",
-            TokenStatus::Sell => "market",
-            _ => "limit",
+            TokenStatus::Buying | TokenStatus::Buy => "ioc",
+            TokenStatus::Selling | TokenStatus::Sell => "market",
+            _ => "ioc",
         };
 
         Self {
@@ -388,6 +466,7 @@ impl TradeOrder {
             sz: size,
             strategy: strategy.to_string(),
             response: None,
+            state: TradeOrderState::Live,
             ts: Utc::now().timestamp_millis().to_string(),
         }
     }

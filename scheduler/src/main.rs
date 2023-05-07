@@ -12,11 +12,13 @@ use utils::*;
 mod account;
 mod app;
 mod models;
+mod okx;
 mod ui;
-mod utils;
+pub mod utils;
 
 const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
+const ORDER_CHECK_DELAY_SECS: i64 = 3;
 const BASE_URL: &str = "https://www.okx.com";
 const ORDERS_ENDPOINT: &str = "/api/v5/trade/order";
 
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         //get current price of tokens
         app.get_tickers().await;
+
         //update timers in portfolio tokens
         account.portfolio = app.reset_timeouts(account.portfolio);
 
@@ -75,23 +78,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await;
         //reset account balance (re-calculate from portfolio ticker prices)
         account.balance.set_current(0.0);
+
+        if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
+            //Check and update order states
+            account.portfolio = app.update_order_states(account.portfolio).await?;
+            //Cancel live orders if above order_ttl
+            //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
+        }
+        //deduct trade fees
+        account.deduct_fees(&app.exchange);
+
         //update tickers
         account.portfolio = app.fetch_portfolio_tickers(account.portfolio).await;
+
         //update reports
         account.portfolio = app
             .update_reports(account.portfolio, cfg.strategy.timeout)
             .await;
+
         //update account balance
         account.calculate_balance().calculate_earnings();
         //Update change
         account.change = get_percentage_diff(account.balance.current, account.balance.start);
 
-        //remove tokens with balance < 0 usd
+        //keep tokens with balance > 0 usd
         account.portfolio.retain(|t| t.balance.current > 0.0);
 
         //Selling and token removal validation occurs on every loop
         //let iter_portfolio = account.portfolio.clone();
         //let mut newdeny = cfg.strategy.denylist.clone().unwrap();
+
         account = app.sell_invalid(account, &cfg.strategy).await?;
 
         //Save changes in actual account struct.

@@ -1,6 +1,8 @@
 use crate::utils::*;
 use crate::{
-    models::{Candlestick, Reason, Report, Selected, Token, TokenStatus, TradeOrder},
+    models::{
+        Candlestick, Reason, Report, Selected, Token, TokenStatus, TradeOrder, TradeOrderState,
+    },
     Account,
 };
 use crate::{time::Instant, DateTime, Duration, SecondsFormat, Utc};
@@ -153,29 +155,81 @@ impl App {
         }
         tokens
     }
+    pub async fn cancel_expired_orders(
+        &mut self,
+        mut tokens: Vec<Selected>,
+    ) -> Result<Vec<Selected>> {
+        for t in tokens.iter_mut() {
+            if t.order.state != TradeOrderState::Filled {
+                let (got_state, _response) = t
+                    .get_order_state(self.exchange.enable_trading, &self.exchange.authentication)
+                    .await?;
+                if t.order.state != got_state {
+                    t.order.state = got_state.clone();
+                    t.status = match got_state {
+                        TradeOrderState::Filled => TokenStatus::Trading,
+                        TradeOrderState::Live => TokenStatus::Buying,
+                        TradeOrderState::PartiallyFilled => TokenStatus::Buying,
+                        TradeOrderState::Cancelled => TokenStatus::Selling,
+                    }
+                }
+            }
+        }
+        Ok(tokens)
+    }
+    pub async fn update_order_states(
+        &mut self,
+        mut tokens: Vec<Selected>,
+    ) -> Result<Vec<Selected>> {
+        for t in tokens.iter_mut() {
+            if t.status == TokenStatus::Buying || t.status == TokenStatus::Selling {
+                let (got_state, response) = t
+                    .get_order_state(self.exchange.enable_trading, &self.exchange.authentication)
+                    .await?;
+                //self.logs.push(format!(response);
+                if t.order.state != got_state {
+                    t.order.state = got_state.clone();
+                    t.status = match got_state {
+                        TradeOrderState::Filled => {
+                            self.trades += 1;
+                            TokenStatus::Trading
+                        }
+                        TradeOrderState::Live => TokenStatus::Buying,
+                        TradeOrderState::PartiallyFilled => TokenStatus::Buying,
+                        TradeOrderState::Cancelled => TokenStatus::Sell,
+                    }
+                }
+            } else if t.order.state == TradeOrderState::Filled
+                || (!self.exchange.enable_trading && t.order.state == TradeOrderState::Live)
+            {
+                t.order.state = TradeOrderState::Filled;
+            }
+        }
+        Ok(tokens)
+    }
     pub async fn fetch_portfolio_tickers(&mut self, mut tokens: Vec<Selected>) -> Vec<Selected> {
         for t in tokens.iter_mut() {
-            if t.status == TokenStatus::Buying {
-                t.status = TokenStatus::Trading;
-            };
-            let query = format!(
-                "SELECT last FROM tickers WHERE instid='{}' order by ts desc limit 1;",
-                t.instid,
-            );
-            if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
-                for row in rows.into_typed::<(f64,)>() {
-                    let (last,): (f64,) = row.unwrap();
-                    t.price = last;
-                }
-            };
-            t.change =
-                get_percentage_diff(t.balance.current * t.price, t.buy_price * t.balance.start);
+            if t.status == TokenStatus::Trading {
+                let query = format!(
+                    "SELECT last FROM tickers WHERE instid='{}' order by ts desc limit 1;",
+                    t.instid,
+                );
+                if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
+                    for row in rows.into_typed::<(f64,)>() {
+                        let (last,): (f64,) = row.unwrap();
+                        t.price = last;
+                    }
+                };
+                t.change =
+                    get_percentage_diff(t.balance.current * t.price, t.buy_price * t.balance.start);
 
-            //update timeout
-            t.timeout = t.timeout - self.time.elapsed;
+                //update timeout
+                t.timeout = t.timeout - self.time.elapsed;
+            }
         }
         tokens
     }
+
     pub fn reset_timeouts(
         &mut self,
         mut tokens: Vec<Selected>,
@@ -191,10 +245,7 @@ impl App {
                     .change
                     > 0.0
                 {
-                    //only reset timeout if change is above floor_threshold
-                    //if token.change >= token.config.sell_floor {
                     token.timeout = token.config.timeout
-                    // }
                 }
             }
         });
@@ -215,7 +266,7 @@ impl App {
                 "select last,sodutc0,volccy24h, high24h, low24h from tickers WHERE instid='{}' order by ts desc limit 1;",
                 t.instid,
             );
-            //self.logs.push(query.clone());
+
             if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
                 for row in rows.into_typed::<(f64, f64, f64, f64, f64)>() {
                     let (last, open24h, volccy24h, high24h, low24h): (f64, f64, f64, f64, f64) =
@@ -248,7 +299,7 @@ impl App {
         self.tokens.iter_mut().for_each(|t| {
             //check if vol is enough in the selected timeframe
             t.vol = t.candlesticks.iter().map(|x| x.vol).sum();
-            //t.instid = t.instid.replace("-USDT", "");
+
             //sum changes and range from candlesticks
             t.change = t.candlesticks.iter().map(|x| x.change).sum();
             let changes: Vec<f32> = t
@@ -270,9 +321,7 @@ impl App {
         });
         self
     }
-    pub fn calculate_fees(&self, amount: f64, fee: f64) -> f64 {
-        amount * (fee / 100.0)
-    }
+
     pub async fn buy_valid(
         &mut self,
         mut account: Account,
@@ -289,49 +338,16 @@ impl App {
 
         for t in account.portfolio.iter_mut() {
             if t.status == TokenStatus::Buy {
-                let fee = self.calculate_fees(account.balance.spendable, self.exchange.maker_fee);
-                //Add transaction fee to fee spend
-                account.fee_spend += fee;
-                //will have this amount to buy tokens after deducting fees
-                let spendable_after_fees = account.balance.spendable - fee;
-
+                let fee = calculate_fees(account.balance.spendable, self.exchange.maker_fee);
                 //remove spent from available balance
                 account.balance.available -= account.balance.spendable;
-
+                //will have this amount to buy tokens after deducting fees
+                let spendable_after_fees = account.balance.spendable - fee;
                 //token balance
                 t.balance.start = spendable_after_fees / t.price;
                 t.balance.current = t.balance.start;
                 t.balance.available = t.balance.start;
                 t.balance.spendable = t.balance.start;
-
-                let order = t
-                    .buy(
-                        self.exchange.enable_trading,
-                        account.authentication.clone(),
-                        &strategy.hash,
-                    )
-                    .await?
-                    .clone()
-                    .order;
-                self.save_trade_order(&order).await?;
-                let log_line = format!(
-                    "[Order ID: {order_id}] {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
-                    order_id = order.ord_id,
-                    token = t.instid,
-                    side = order.side,
-                    ord_type = order.ord_type,
-                    price = order.px,
-                    size = order.sz,
-                    response = if self.exchange.enable_trading {
-                        order.response.unwrap().data[0].clone().s_msg
-                    } else {
-                        String::from("N/A")
-                    }
-                );
-                self.logs.push(log_line);
-                //create report
-                self.trades += 1;
-                self.round_id += 1;
 
                 let mut time_deviation = Vec::new();
                 let mut change_deviation = Vec::new();
@@ -342,6 +358,8 @@ impl App {
                 t.instid,
                 &strategy.hash
                 );
+
+                //Configure Selected token
                 if let Some(rows) = self
                     .db_session
                     .query(&*query, &[])
@@ -357,9 +375,7 @@ impl App {
                         results_count = c;
                     }
                 };
-                //let skip = true;
                 if results_count != 0 {
-                    // if !skip {
                     let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 t.instid,
@@ -396,15 +412,42 @@ impl App {
                         t.config.sell_floor = strategy.sell_floor.unwrap();
                     };
                 } else {
-                    /*
-                    self.logs.push(format!(
-                        "no reports found for token {} -- setting defaults",
-                        t.instid
-                    ));*/
                     t.timeout = Duration::seconds(strategy.timeout);
                     t.config.timeout = t.timeout;
                     t.config.sell_floor = strategy.sell_floor.unwrap();
                 };
+
+                let order = t
+                    .buy(
+                        self.exchange.enable_trading,
+                        account.authentication.clone(),
+                        &strategy.hash,
+                    )
+                    .await?
+                    .clone()
+                    .order;
+                self.save_trade_order(&order).await?;
+                let log_line = format!("[{timestamp}] Order: {order_id} {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    order_id = order.ord_id,
+                    token = t.instid,
+                    side = order.side,
+                    ord_type = order.ord_type,
+                    price = order.px,
+                    size = order.sz,
+                    response = if self.exchange.enable_trading {
+                        match order.response {
+                            Some(r) => r.data[0].clone().s_msg,
+                            None => format!("{:?}", order.response)
+                        }
+                    } else {
+                        String::from("N/A")
+                    }
+                );
+                self.logs.push(log_line);
+
+                self.round_id += 1;
+
                 t.report = Report {
                     instid: t.instid.clone(),
                     reason: Reason::Buy.to_string(),
@@ -419,8 +462,6 @@ impl App {
                     lowest_elapsed: strategy.timeout - t.timeout.num_seconds(),
                     ..Default::default()
                 };
-
-                //self.save_report(&t.report).await
             }
         }
         Ok(account)
@@ -432,6 +473,17 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
+            if t.order.state == TradeOrderState::Cancelled {
+                account.balance.available += t.balance.current * t.price;
+                self.logs.push(format!("[{timestamp}] Order: {order_id} {state} due to IOC trade mode. Removing {token} from portfolio",
+                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    state = t.order.state.to_string(),
+                    order_id = t.order.ord_id,
+                    token = t.instid,
+                    ));
+                t.status = TokenStatus::Selling;
+                continue;
+            }
             let found = self.tokens.iter().any(|s| t.instid == s.instid);
             /*
             if t.candlesticks
@@ -480,8 +532,8 @@ impl App {
             if t.status == TokenStatus::Sell {
                 //calculate fees
                 let usdt_balance = t.balance.current * t.price;
-                let usdt_fee = self.calculate_fees(usdt_balance, self.exchange.taker_fee);
-                let token_fees = self.calculate_fees(t.balance.current, self.exchange.taker_fee);
+                let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);
+                let token_fees = calculate_fees(t.balance.current, self.exchange.taker_fee);
                 let token_balance_after_fees = t.balance.current - token_fees;
                 account.fee_spend += usdt_fee;
                 let balance_after_fees = usdt_balance - usdt_fee;
@@ -500,7 +552,8 @@ impl App {
                     .order;
                 self.save_trade_order(&order).await?;
                 let log_line = format!(
-                    "[Order ID: {order_id}] {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    "[{timestamp}] Order: {order_id} :: {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S").to_string(),
                     order_id = order.ord_id,
                     token = t.instid,
                     side = order.side,
@@ -508,7 +561,10 @@ impl App {
                     price = order.px,
                     size = order.sz,
                     response = if self.exchange.enable_trading {
-                        order.response.unwrap().data[0].clone().s_msg
+                        match order.response {
+                            Some(r) => r.data[0].clone().s_msg,
+                            None => format!("{:?}", order.response)
+                        }
                     } else {
                         String::from("N/A")
                     }
@@ -583,9 +639,9 @@ impl App {
                 let last_candle = t.candlesticks.last().unwrap_or(&blank_candle);
                 !denied
                     //No missing candles in our data
-                    && t.candlesticks.len() >= strategy.timeframe as usize
+                    //&& t.candlesticks.len() >= strategy.timeframe as usize
                     //Half of the candles of our timeframe had more volume than our spendable 
-                    && pcc >= strategy.timeframe as usize /2
+                    //&& pcc >= strategy.timeframe as usize /2
                     && t.change >= strategy.min_change
                     && t.std_deviation >= strategy.min_deviation
                     && last_candle.clone().vol >= spendable

@@ -8,6 +8,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
 
+const TABLE_WIDTH: u16 = 300;
 pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Table>> {
     let mut tables = Vec::new();
     if cfg.ui.dashboard {
@@ -21,7 +22,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Disabled)
-            .set_width(250)
+            .set_width(TABLE_WIDTH)
             .set_header(vec![
                 "Symbol",
                 "Candles",
@@ -165,16 +166,24 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         tables.push(table_instids);
     }
     if cfg.ui.portfolio {
-        //Create comfy table
         let mut table_instids = Table::new();
         table_instids
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Disabled)
-            .set_width(250)
+            .set_width(TABLE_WIDTH)
             .set_header(vec![
-                "Symbol", "Candles", "LastCand", "Std Dev", "Price", "Balance", "Change",
-                "Earnings", "Timeout", "Status",
+                "Symbol",
+                "Candles",
+                "LastCand",
+                "Std Dev",
+                "Balance",
+                "Change",
+                "Earnings",
+                "Timeout",
+                "OrderID",
+                "OrderState",
+                "Status",
             ]);
         //print token rows
         for t in account.portfolio.iter() {
@@ -228,16 +237,13 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Green),
                 );
             };
-            //price
-            token_row
-                .push(Cell::new(format!("{:.7}", t.price)).set_alignment(CellAlignment::Center));
             //buy vs sell
 
             //Balance
             token_row.push(
                 Cell::new(format!("{:.2}", t.balance.current))
                     .set_alignment(CellAlignment::Center)
-                    .add_attribute(Attribute::Bold), //   .fg(Color::Red),
+                    .add_attribute(Attribute::Bold),
             );
             //change
             if t.change < 0.00 {
@@ -307,6 +313,18 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Yellow),
                 );
             }
+            //Order ID
+            token_row.push(
+                Cell::new(format!("{}", t.order.ord_id))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+            //Order State
+            token_row.push(
+                Cell::new(format!("{}", t.order.state.to_string()))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
             //status
             match t.status {
                 TokenStatus::Trading => token_row.push(
@@ -351,7 +369,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Disabled)
-            .set_width(250)
+            .set_width(TABLE_WIDTH)
             .set_header(vec![
                 "Current",
                 "Change",
@@ -444,13 +462,13 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
 
         tables.push(table_account);
     }
-    if cfg.ui.debug {
+    if cfg.ui.strategy {
         let mut table_config = Table::new();
         table_config
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Disabled)
-            .set_width(250)
+            .set_width(TABLE_WIDTH)
             .set_header(vec![
                 "Timeframe",
                 "Cooldown",
@@ -512,12 +530,15 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
 
         table_config.add_row(row);
+        tables.push(table_config);
+    }
+    if cfg.ui.system {
         let mut table_time = Table::new();
         table_time
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
             .set_content_arrangement(ContentArrangement::Disabled)
-            .set_width(250)
+            .set_width(TABLE_WIDTH)
             .set_header(vec!["Started", "Date", "Uptime", "Cycles", "Latency"]);
         let mut row: Vec<Cell> = Vec::new();
         row.push(Cell::new(format!("{}", app.time.started)).set_alignment(CellAlignment::Center));
@@ -534,7 +555,6 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
 
         table_time.add_row(row);
-        tables.push(table_config);
         tables.push(table_time);
     }
     if cfg.ui.deny_list {
@@ -542,13 +562,13 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         table_denied
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
-            //.set_width(250)
+            //.set_width(TABLE_WIDTH)
             .set_content_arrangement(ContentArrangement::Dynamic)
             .set_width(120)
             .set_header(vec!["Deny list"]);
         let mut row: Vec<Cell> = Vec::new();
         row.push(Cell::new(format!("{:?}", app.deny_list)).set_alignment(CellAlignment::Center));
-        table_denied.add_row(row); 
+        table_denied.add_row(row);
         tables.push(table_denied);
     }
     if cfg.ui.logs {
@@ -557,7 +577,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             table_logs
                 .load_preset(UTF8_FULL)
                 .apply_modifier(UTF8_ROUND_CORNERS)
-                //.set_width(250)
+                //.set_width(TABLE_WIDTH)
                 .set_content_arrangement(ContentArrangement::Dynamic)
                 .set_width(400)
                 .set_header(vec!["Logs"]);

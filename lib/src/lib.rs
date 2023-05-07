@@ -68,6 +68,7 @@ pub struct Exchange {
     pub authentication: Authentication,
     pub taker_fee: f64,
     pub maker_fee: f64,
+    pub order_ttl: u32,
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Authentication {
@@ -101,7 +102,8 @@ pub struct Strategy {
 pub struct Ui {
     pub dashboard: bool,
     pub portfolio: bool,
-    pub debug: bool,
+    pub strategy: bool,
+    pub system: bool,
     pub deny_list: bool,
     pub balance: bool,
     pub logs: bool,
@@ -231,6 +233,7 @@ impl Default for Exchange {
             authentication: Authentication::default(),
             taker_fee: 0.1,
             maker_fee: 0.08,
+            order_ttl: 60,
         }
     }
 }
@@ -271,7 +274,8 @@ impl Ui {
         Self {
             dashboard: true,
             portfolio: true,
-            debug: true,
+            strategy: true,
+            system: true,
             balance: true,
             deny_list: true,
             logs: true,
