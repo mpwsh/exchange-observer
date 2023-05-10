@@ -1,9 +1,4 @@
-use crate::app::App;
-use crate::models::Candlestick;
-use crate::Account;
-use crate::AppConfig;
-use crate::Result;
-use crate::TokenStatus;
+use crate::prelude::*;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
@@ -107,6 +102,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             );
             //vol
             token_row.push(Cell::new(format!("{:.0}", t.vol)).set_alignment(CellAlignment::Center));
+
             //change 24h
             if t.change24h <= 0.00 {
                 token_row.push(
@@ -176,13 +172,17 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "Symbol",
                 "Candles",
                 "LastCand",
-                "Std Dev",
                 "Balance",
+                "Now Px",
+                "Buy Px",
                 "Change",
                 "Earnings",
                 "Timeout",
-                "OrderID",
-                "OrderState",
+                "[B] OrderID",
+                "[B] OrderState",
+                "[S] OrderID",
+                "[S] OrderState",
+                "Reason",
                 "Status",
             ]);
         //print token rows
@@ -221,27 +221,23 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Green),
                 );
             };
-            //standard deviation
-            if t.std_deviation <= 0.00 {
-                token_row.push(
-                    Cell::new(format!("{:.2}%", t.std_deviation))
-                        .set_alignment(CellAlignment::Center)
-                        .add_attribute(Attribute::Bold)
-                        .fg(Color::Red),
-                );
-            } else {
-                token_row.push(
-                    Cell::new(format!("{:.2}%", t.std_deviation))
-                        .set_alignment(CellAlignment::Center)
-                        .add_attribute(Attribute::Bold)
-                        .fg(Color::Green),
-                );
-            };
-            //buy vs sell
 
-            //Balance
+            //Avail Balance
             token_row.push(
-                Cell::new(format!("{:.2}", t.balance.current))
+                Cell::new(format!("{}", t.balance.available))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+
+            //Current Price
+            token_row.push(
+                Cell::new(format!("{}", t.price))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+            //Buy price
+            token_row.push(
+                Cell::new(format!("{}", t.buy_price))
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
@@ -313,41 +309,91 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Yellow),
                 );
             }
-            //Order ID
+            let trade_enabled = app.exchange.enable_trading;
+            //Buy Order IDs
+            let order_ids: Vec<String> = t
+                .orders
+                .as_ref()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|o| o.side == Side::Buy)
+                .map(|o| {format!("{}", if trade_enabled { o.ord_id.clone() } else { o.cl_ord_id.clone() })})
+                .collect();
+
             token_row.push(
-                Cell::new(format!("{}", t.order.ord_id))
+                Cell::new(order_ids.last().unwrap_or(&String::from("---")))
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
-            //Order State
+            //Buy Order States
+            let order_states: Vec<String> = t
+                .orders
+                .as_ref()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|o| o.side == Side::Buy)
+                .map(|o| format!("{}", o.state.to_string()))
+                .collect();
+
             token_row.push(
-                Cell::new(format!("{}", t.order.state.to_string()))
+                Cell::new(order_states.last().unwrap_or(&String::from("---")))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+            //Sell Order IDs
+            let order_ids: Vec<String> = t
+                .orders
+                .as_ref()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|o| o.side == Side::Sell)
+                .map(|o| {format!("{}", if trade_enabled { o.ord_id.clone() } else { o.cl_ord_id.clone() })})
+                .collect();
+
+            token_row.push(
+                Cell::new(order_ids.last().unwrap_or(&String::from("---")))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+            //Sell Order States
+            let order_states: Vec<String> = t
+                .orders
+                .as_ref()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter(|o| o.side == Side::Sell)
+                .map(|o| format!("{}", o.state.to_string()))
+                .collect();
+
+            token_row.push(
+                Cell::new(order_states.last().unwrap_or(&String::from("---")))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+            //reason
+            token_row.push(
+                Cell::new(format!("{:?}", t.exit_reason))
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
             //status
             match t.status {
-                TokenStatus::Trading => token_row.push(
+                token::Status::Trading => token_row.push(
                     Cell::new(format!("{:?}", t.status))
                         .set_alignment(CellAlignment::Center)
                         .fg(Color::White),
                 ),
-                TokenStatus::Selling => token_row.push(
+                token::Status::Selling => token_row.push(
                     Cell::new(format!("{:?}", t.status))
                         .set_alignment(CellAlignment::Center)
                         .fg(Color::DarkYellow),
                 ),
-                TokenStatus::Buying => token_row.push(
+                token::Status::Buying => token_row.push(
                     Cell::new(format!("{:?}", t.status))
                         .set_alignment(CellAlignment::Center)
                         .fg(Color::DarkBlue),
                 ),
-                TokenStatus::Waiting => token_row.push(
-                    Cell::new(format!("{:?}", t.status))
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::DarkGrey),
-                ),
-                _ => token_row.push(
+                token::Status::Waiting => token_row.push(
                     Cell::new(format!("{:?}", t.status))
                         .set_alignment(CellAlignment::Center)
                         .fg(Color::DarkGrey),
@@ -371,22 +417,15 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             .set_content_arrangement(ContentArrangement::Disabled)
             .set_width(TABLE_WIDTH)
             .set_header(vec![
-                "Current",
                 "Change",
+                "Balance",
+                "Available",
                 "Earnings",
                 "Fee Spend",
-                "Available",
                 "Spendable",
                 "Strategy",
             ]);
         let mut token_row: Vec<Cell> = Vec::new();
-
-        //balance current
-        token_row.push(
-            Cell::new(format!("$ {:.2}", account.balance.current))
-                .set_alignment(CellAlignment::Center)
-                .fg(Color::White),
-        );
 
         //change
         if account.change < 0.00 {
@@ -396,23 +435,11 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Bold)
                     .fg(Color::Red),
             );
-            //Earnings
-            token_row.push(
-                Cell::new(format!("$ {:.2}", account.earnings))
-                    .set_alignment(CellAlignment::Center)
-                    .fg(Color::Red),
-            );
         } else if account.change > 0.0 {
             token_row.push(
                 Cell::new(format!("{:.2}%", account.change))
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold)
-                    .fg(Color::Green),
-            );
-            //Earnings
-            token_row.push(
-                Cell::new(format!("$ {:.2}", account.earnings))
-                    .set_alignment(CellAlignment::Center)
                     .fg(Color::Green),
             );
         } else {
@@ -422,16 +449,12 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Bold)
                     .fg(Color::DarkGrey),
             );
-            //Earnings
-            token_row.push(
-                Cell::new(format!("$ {:.2}", account.earnings))
-                    .set_alignment(CellAlignment::Center)
-                    .fg(Color::DarkGrey),
-            );
-        };
-        //Fee Spend
+        }
+        //balance current
         token_row.push(
-            Cell::new(format!("$ {:.2}", account.fee_spend)).set_alignment(CellAlignment::Center),
+            Cell::new(format!("$ {:.2}", account.balance.current))
+                .set_alignment(CellAlignment::Center)
+                .fg(Color::White),
         );
         //Available
         if account.balance.available < account.balance.spendable {
@@ -446,6 +469,18 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .set_alignment(CellAlignment::Center),
             );
         }
+        //earnings
+        token_row.push(
+            Cell::new(format!("$ {:.2}", account.earnings))
+                .set_alignment(CellAlignment::Center)
+                .fg(Color::DarkGrey),
+        );
+
+        //Fee Spend
+        token_row.push(
+            Cell::new(format!("$ {:.2}", account.fee_spend)).set_alignment(CellAlignment::Center),
+        );
+
         //Spendable per trade
         token_row.push(
             Cell::new(format!("$ {:.2}", account.balance.spendable))
@@ -498,7 +533,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             Cell::new(format!("{:.2} %", cfg.strategy.min_change))
                 .set_alignment(CellAlignment::Center),
         );
-        row.push(Cell::new(format!("{}", app.token_count)).set_alignment(CellAlignment::Center));
+        row.push(Cell::new(format!("{}", app.tokens.len())).set_alignment(CellAlignment::Center));
 
         row.push(
             Cell::new(format!("{:.2} %", cfg.strategy.cashout))
@@ -518,7 +553,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
         // Trade count
         row.push(
-            Cell::new(format!("{}", app.trades))
+            Cell::new(format!("{}", account.trades))
                 .set_alignment(CellAlignment::Center)
                 .fg(Color::White),
         );
