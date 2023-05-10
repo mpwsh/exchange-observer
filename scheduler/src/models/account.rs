@@ -82,49 +82,35 @@ impl Account {
                                 t.balance.available = t.balance.start;
                             }
                         },
-                        OrderState::Filled => match order.side {
-                            Side::Buy => {
-                                t.balance.current = t.balance.start;
-                                t.balance.available = t.balance.start;
+                        OrderState::Filled => {
+                            self.trades += 1;
+                            self.fee_spend += usdt_taker_fee;
+                            match order.side {
+                                Side::Buy => {
+                                    t.balance.current = t.balance.start;
+                                    t.balance.available = t.balance.start;
+                                }
+                                Side::Sell => {
+                                    t.balance.current -= size;
+                                    self.balance.available += (size * price) - usdt_taker_fee;
+                                }
                             }
-                            Side::Sell => {
-                                t.balance.current -= size;
-                                self.balance.available += (size * price) - usdt_taker_fee;
-
-                            }
-                        },
-                        _ => {},
+                        }
+                        _ => {}
                     };
                     //log the order
                     if order.prev_state != OrderState::Created {
                         app.logs.push(app.build_order_log(order));
                     };
                     //lock the order
-                    order.prev_state = order.state.clone(); 
+                    order.prev_state = order.state.clone();
                 }
             }
-        self.balance.current += t.balance.current * t.price;
+            self.balance.current += t.balance.current * t.price;
         }
         self.balance.current += self.balance.available;
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
         self
-    }
-
-    pub fn deduct_trading_fees(&mut self, exchange: &Exchange) {
-        for t in self.portfolio.iter_mut() {
-            if let Some(orders) = &mut t.orders {
-                for order in orders
-                    .iter_mut()
-                    .filter(|o| o.side == Side::Buy && o.state == OrderState::Filled)
-                {
-                    let deducted = order.deduct_fees(self.balance.spendable, exchange);
-                    if deducted > 0.0 {
-                        self.trades += 1;
-                        self.fee_spend += deducted
-                    }
-                }
-            }
-        }
     }
 
     pub fn calculate_earnings(&mut self) -> &mut Self {

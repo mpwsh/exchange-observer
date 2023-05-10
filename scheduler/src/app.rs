@@ -150,12 +150,10 @@ impl App {
         for t in tokens.iter_mut() {
             if !self.exchange.enable_trading {
                 //Set simulated orders as filled
-                for order in t
-                    .orders
-                    .as_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .filter(|o| o.state == OrderState::Live && o.prev_state != OrderState::Created)
+                for order in
+                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
+                        o.state == OrderState::Live && o.prev_state != OrderState::Created
+                    })
                 {
                     let mut rng = thread_rng();
                     let random_state = if rng.gen_bool(1.0 / 3.0) {
@@ -178,12 +176,10 @@ impl App {
                     }
                 }
             } else {
-                for order in t
-                    .orders
-                    .as_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .filter(|o| o.state == OrderState::Live && o.prev_state != OrderState::Created)
+                for order in
+                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
+                        o.state == OrderState::Live && o.prev_state != OrderState::Created
+                    })
                 {
                     if !order.ord_id.is_empty() {
                         let got_state = order.get_state(&self.exchange.authentication).await?;
@@ -196,12 +192,12 @@ impl App {
                                     Side::Buy => token::Status::Trading,
                                     Side::Sell => token::Status::Selling,
                                 },
-                                OrderState::Live | OrderState::Created | OrderState::PartiallyFilled => {
-                                    match order.side {
-                                        Side::Buy => token::Status::Buying,
-                                        Side::Sell => token::Status::Selling,
-                                    }
-                                }
+                                OrderState::Live
+                                | OrderState::Created
+                                | OrderState::PartiallyFilled => match order.side {
+                                    Side::Buy => token::Status::Buying,
+                                    Side::Sell => token::Status::Selling,
+                                },
                                 OrderState::Cancelled => token::Status::Trading,
                             };
                         }
@@ -233,9 +229,11 @@ impl App {
                         t.price = last;
                     }
                 };
-                if t.balance.current > 0.0 { 
-                t.change =
-                    get_percentage_diff(t.balance.current * t.price, t.buy_price * t.balance.start);
+                if t.balance.current > 0.0 {
+                    t.change = get_percentage_diff(
+                        t.balance.current * t.price,
+                        t.buy_price * t.balance.start,
+                    );
                 }
 
                 //update timeout
@@ -391,7 +389,7 @@ impl App {
                     reason: String::new(),
                     round_id: self.round_id,
                     ts: Utc::now().timestamp_millis().to_string(),
-                    buy_price: t.price, 
+                    buy_price: t.price,
                     strategy: strategy.hash.clone(),
                     change: t.change,
                     highest: t.change,
@@ -445,9 +443,8 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
-
             //Token has a reached a threahold and we still have > 10 USD of tokens to sell.
-            if t.exit_reason.is_some() && (t.balance.available*t.price > 10.0) {
+            if t.exit_reason.is_some() && (t.balance.available * t.price > 10.0) {
                 //Update report
                 let usdt_balance = t.balance.available * t.price;
                 let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);

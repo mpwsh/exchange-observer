@@ -53,8 +53,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
-        //deduct trade fees
-        account.deduct_trading_fees(&app.exchange);
 
         account.portfolio = app.reset_timeouts(account.portfolio, &cfg.strategy);
         account.portfolio = app
@@ -67,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             //TODO: Cancel live orders if above order_ttl
             //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
         }
-        
+
         //update reports
         account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
 
@@ -88,7 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         account
             .calculate_balance(&mut app)
             .calculate_earnings()
-            .clean_portfolio(); 
+            .clean_portfolio();
 
         //update tickers
         account.portfolio = app.get_tickers_simple(account.portfolio).await;

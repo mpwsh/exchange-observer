@@ -17,8 +17,6 @@ pub struct Order {
     pub state: OrderState,
     #[serde(skip_serializing)]
     pub prev_state: OrderState,
-    #[serde(skip_serializing)]
-    pub fees_deducted: bool,
     pub strategy: String,
     #[serde(skip_serializing)]
     pub response: Option<OkxOrderResponse>,
@@ -142,7 +140,6 @@ impl Order {
             sz: size.to_string(),
             strategy: strategy.to_string(),
             response: None,
-            fees_deducted: false,
             prev_state: OrderState::Created,
             state: OrderState::Live,
             ts: Utc::now().timestamp_millis().to_string(),
@@ -218,18 +215,6 @@ impl Order {
             };
         }
         Ok(())
-    }
-    pub fn deduct_fees(&mut self, expense: f64, exchange: &Exchange) -> f64 {
-        if self.state == OrderState::Filled && !self.fees_deducted {
-            let fee = calculate_fees(expense, exchange.taker_fee);
-
-            // Set fees_deducted to true
-            self.fees_deducted = true;
-
-            // Return the calculated fee
-            return fee;
-        }
-        0.0
     }
 }
 

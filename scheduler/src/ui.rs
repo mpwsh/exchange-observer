@@ -317,7 +317,16 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Buy)
-                .map(|o| {format!("{}", if trade_enabled { o.ord_id.clone() } else { o.cl_ord_id.clone() })})
+                .map(|o| {
+                    format!(
+                        "{}",
+                        if trade_enabled {
+                            o.ord_id.clone()
+                        } else {
+                            o.cl_ord_id.clone()
+                        }
+                    )
+                })
                 .collect();
 
             token_row.push(
@@ -347,7 +356,16 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Sell)
-                .map(|o| {format!("{}", if trade_enabled { o.ord_id.clone() } else { o.cl_ord_id.clone() })})
+                .map(|o| {
+                    format!(
+                        "{}",
+                        if trade_enabled {
+                            o.ord_id.clone()
+                        } else {
+                            o.cl_ord_id.clone()
+                        }
+                    )
+                })
                 .collect();
 
             token_row.push(
