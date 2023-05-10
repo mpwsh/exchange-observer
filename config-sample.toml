@@ -1,8 +1,8 @@
 [account]
 #Total Available balance (Add a bit more for trade fees)
-balance=1000.0
-#USDT to use to buy of each selected token
-spendable=50.0
+balance=100
+#USDT to use to buy per selected token (can this be tied to current volume to avoid moving the candle too much?
+spendable=20
 
 [exchange]
 name="okx"
@@ -13,7 +13,6 @@ taker_fee=0.10
 maker_fee=0.08
 #Cancel open orders after (x) seconds
 order_ttl=30
-
 [exchange.authentication]
 access_key=""
 secret_key=""
@@ -21,11 +20,12 @@ passphrase=""
 
 [strategy]
 #Scan for the top (x) tokens
-top=5
+top=8
 #Work with (x) amount of tokens at the same time
-portfolio_size=3
+portfolio_size=5
 #Block following tokens
-#deny_list=["TAMA", "SKEB", "CTC", "DEVT","BNT"]
+
+#deny_list=["LUNC", "UST", "BTC", "ETH", "MAGIC", "VALUE", "AIDOGE", "APIX", "SWRV", "MDA", "BORING", "TRUE", "XPR", "TOWN", "FODL", "WSB", "TAMA", "SKEB", "CTC", "DEVT","BNT"]  
 
 #retrieve last(x) minutes of candlesticks to analyze the performance of tokens
 timeframe=5
@@ -33,12 +33,12 @@ timeframe=5
 cooldown=5
 #Dont wait for cooldown on first round (set to false when using blank database)
 quickstart=true
-#Min vol to be elegible (a sane default is: timeframe * 2600 to avoid tokens with high volatility in short periods of time)
+#Min vol to be elegible (a sane default is: timeframe * 1600 to avoid tokens with high volatility in short periods of time)
 min_vol=10000.0
 #Min change to be elegible
-min_change=0.1
+min_change=0.01
 #Last candle should be at least this much to be eligible
-min_change_last_candle=0.01
+min_change_last_candle=0.05
 #Min standard deviation on selected timeframe. (std deviation coming from sum of all candles)
 min_deviation=0.01
 #sell if losing more than (x) % (optional. Will sell if token is not in top tokens when cooldown finishes)
@@ -48,7 +48,7 @@ cashout=3.0 #token will be bought back with spendable balance if is still select
 #Only sell tokens from portfolio if earnings are above (x)%
 sell_floor=1.0
 #sell if timeout is reached, even if 'sell_above' was not met
-timeout=600
+timeout=240
 #Avoid trading a token if stoploss was triggered
 avoid_after_stoploss=true
 
