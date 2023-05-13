@@ -73,6 +73,41 @@ impl Candlestick {
             vol: 0.0,
         }
     }
+    pub fn from_tickers(instid: &str, tickers: &[(f64, f64, Duration)]) -> Option<Candlestick> {
+        if tickers.is_empty() {
+            return None;
+        }
+
+        let open = tickers.first()?.0;
+        let close = tickers.last()?.0;
+
+        let mut high = tickers[0].0;
+        let mut low = tickers[0].0;
+        let mut vol = 0.0;
+
+        for &(price, size, _) in tickers {
+            high = high.max(price);
+            low = low.min(price);
+            vol += size * price;
+        }
+
+        let change = ((close - open) / open) as f32;
+        let range = ((high - low) / low) as f32;
+
+        let ts = tickers.last()?.2;
+
+        Some(Candlestick {
+            instid: instid.to_string(),
+            ts,
+            change,
+            close,
+            high,
+            low,
+            open,
+            range,
+            vol,
+        })
+    }
 }
 
 #[serde_with::serde_as]

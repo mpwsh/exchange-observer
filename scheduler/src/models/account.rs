@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use exchange_observer::{Authentication, Exchange, Strategy};
+use exchange_observer::{Authentication, Strategy};
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -47,7 +47,7 @@ impl Account {
         }
     }
 
-    pub fn calculate_balance(&mut self, mut app: &mut crate::App) -> &mut Self {
+    pub fn calculate_balance(&mut self, app: &mut crate::App) -> &mut Self {
         let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
 
         for t in self.portfolio.iter_mut() {

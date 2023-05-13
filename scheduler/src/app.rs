@@ -1,11 +1,11 @@
 use crate::prelude::*;
 use console::Term;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use pushover_rs::{
     send_pushover_request, Message, MessageBuilder, PushoverResponse, PushoverSound,
 };
 use rand::thread_rng;
 use rand::Rng;
-use scylla::{transport::Compression, IntoTypedRows, QueryResult, Session, SessionBuilder};
 use std::sync::Arc;
 use time::Instant;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -361,7 +361,7 @@ impl App {
                 t.balance.start = spendable_after_fees / t.price;
 
                 //Configure Token using previously saved reports
-                t.configure_from_report(&strategy, &self.db_session).await;
+                t.configure_from_report(strategy, &self.db_session).await;
 
                 {
                     // Create order
@@ -469,8 +469,15 @@ impl App {
                     self.logs.push(log_line);
                 }
 
-                //build up deny list if stoploss
-                if t.exit_reason == Some(ExitReason::Stoploss) && strategy.avoid_after_stoploss {
+                //build up deny list if stoploss.
+                let denied = self
+                    .deny_list
+                    .iter()
+                    .any(|i| format!("{}-USDT", i) == t.instid);
+                if t.exit_reason == Some(ExitReason::Stoploss)
+                    && strategy.avoid_after_stoploss
+                    && !denied
+                {
                     self.deny_list.push(t.instid.replace("-USDT", ""))
                 };
 
@@ -489,7 +496,6 @@ impl App {
                     ..t.report.clone()
                 };
                 t.report = report;
-                /*
                 //push log
                 self.logs.push(format!(
                     "[Round report] for {}: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - Exit Balance: {:.2} - ExitReason: {}",
@@ -501,7 +507,7 @@ impl App {
                     earnings,
                     usdt_balance_after_fees,
                     t.exit_reason.clone().unwrap().to_string(),
-                ));*/
+                ));
 
                 self.save_report(&t.report).await?;
             }
@@ -569,42 +575,89 @@ impl App {
         }
         self
     }
-    pub async fn update_candles(&mut self, timeframe: i64, mut tokens: Vec<Token>) -> Vec<Token> {
+    pub async fn update_candles(
+        &self,
+        timeframe: i64,
+        tokens: Vec<Token>,
+    ) -> Result<Vec<Token>, Box<dyn Error>> {
         let xdt = self.time.utc - Duration::minutes(timeframe);
         let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
-        for t in tokens.iter_mut() {
-            let query = format!(
-                "SELECT * FROM candle1m WHERE instid='{}' LIMIT {}",
-                t.instid, timeframe,
-            );
-            if let Some(rows) = self
-                .db_session
-                .query(&*query, &[])
-                .await
-                .unwrap_or_default()
-                .rows
-            {
-                for row in rows.into_typed::<Candlestick>() {
-                    let candle: Candlestick = row.unwrap();
-                    if let Some(ci) = t.candlesticks.iter().position(|c| candle.ts == c.ts) {
-                        t.candlesticks[ci] = candle;
-                    } else {
-                        t.candlesticks.push(candle);
-                    }
-                }
-            }
-            t.candlesticks
-                .retain(|c| c.ts >= Duration::milliseconds(dt.timestamp_millis()));
-            let changes: Vec<f32> = t
-                .candlesticks
-                .clone()
-                .into_iter()
-                .map(|x| x.change)
-                .collect();
-            t.std_deviation = std_deviation(&changes).unwrap_or(0.0);
-        }
 
-        tokens
+        let get_candles_query = self
+            .db_session
+            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts >= ? order by ts asc")
+            .await?;
+        let get_tickers_query = self
+            .db_session
+            .prepare(
+                "SELECT last, lastsz, ts FROM tickers WHERE instid=? AND ts >= ? order by ts asc;",
+            )
+            .await?;
+
+        stream::iter(tokens.into_iter().map(|mut token| {
+            let get_candle_stmt = get_candles_query.clone();
+            let get_ticker_stmt = get_tickers_query.clone();
+            log::error!("SELECT * FROM candle1m WHERE instid='{}' AND ts >= '{}' order by ts asc", token.instid, dt.to_rfc3339_opts(SecondsFormat::Millis, true));
+            let last_min = (Utc::now() - Duration::minutes(1)).with_second(0).unwrap().with_nanosecond(0).unwrap();
+            log::error!("SELECT last, lastsz, ts FROM tickers WHERE instid='{}' AND ts >= '{}' order by ts asc", token.instid, last_min.to_rfc3339_opts(SecondsFormat::Millis, true));
+            async move {
+                if let Some(rows) = self
+                    .db_session
+                    .execute(&get_candle_stmt, (&token.instid, dt.to_rfc3339_opts(SecondsFormat::Millis, true)))
+                    .await?
+                    .rows
+                {
+                    for row in rows.into_typed::<Candlestick>() {
+                        let candle = row.unwrap_or(Candlestick::new());
+                        if let Some(ci) = token.candlesticks.iter().position(|c| candle.ts == c.ts)
+                        {
+                            token.candlesticks[ci] = candle;
+                        } else {
+                            token.candlesticks.push(candle);
+                        }
+                    }
+                };
+
+                let last_min = Utc::now() - Duration::minutes(1);
+                if let Some(rows) = self
+                    .db_session
+                    .execute(
+                        &get_ticker_stmt,
+                        (
+                            &token.instid,
+                            last_min.to_rfc3339_opts(SecondsFormat::Millis, true),
+                        ),
+                    )
+                    .await?
+                    .rows
+                {
+                    let tickers: Vec<(f64, f64, Duration)> = rows
+                        .into_typed::<(f64, f64, Duration)>()
+                        .filter_map(Result::ok)
+                        .collect();
+
+                    if let Some(ticker_candle) = Candlestick::from_tickers(&token.instid, &tickers)
+                    {
+                        token.add_or_update_candle(ticker_candle);
+                    }
+                };
+
+                token
+                    .candlesticks
+                    .retain(|c| c.ts >= Duration::milliseconds(dt.timestamp_millis()));
+                let changes: Vec<f32> = token
+                    .candlesticks
+                    .clone()
+                    .into_iter()
+                    .map(|x| x.change)
+                    .collect();
+                token.std_deviation = std_deviation(&changes).unwrap_or(0.0);
+                Ok(token)
+            }
+        }))
+        .buffer_unordered(10) // Adjust the concurrency level according to your system's capabilities
+        .try_collect::<Vec<Token>>()
+        .await
     }
 
     pub async fn fetch_top_tokens(&mut self, timeframe: i64) -> &mut Self {
