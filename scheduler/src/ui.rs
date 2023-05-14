@@ -222,10 +222,10 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             };
             //price
             token_row.push(
-                    Cell::new(t.price.to_string())
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::DarkGrey),
-                );
+                Cell::new(t.price.to_string())
+                    .set_alignment(CellAlignment::Center)
+                    .fg(Color::DarkGrey),
+            );
             //Avail Balance
             token_row.push({
                 let formatted_value = if t.balance.available == 0.0 {
@@ -247,11 +247,20 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 let formatted_value = if t.balance.available == 0.0 {
                     "---".to_string()
                 } else if t.balance.available > 0.0 && t.balance.available < 10.0 {
-                    format!("{:.6}", t.balance.available - calculate_fees(t.balance.available,t.price))
+                    format!(
+                        "{:.6}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
                 } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
-                    format!("{:.2}", t.balance.available - calculate_fees(t.balance.available,t.price))
+                    format!(
+                        "{:.2}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
                 } else {
-                    format!("{:.0}", t.balance.available - calculate_fees(t.balance.available,t.price))
+                    format!(
+                        "{:.0}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
                 };
 
                 Cell::new(formatted_value)

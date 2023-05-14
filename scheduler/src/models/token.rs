@@ -91,16 +91,20 @@ impl Candlestick {
             vol += size * price;
         }
         let change = get_percentage_diff(close, open);
-        let range = get_percentage_diff(high,low);
+        let range = get_percentage_diff(high, low);
         let ts = tickers.last()?.2;
         let datetime = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc) + ts;
 
         Some(Candlestick {
             instid: instid.to_string(),
-            ts: Duration::milliseconds(datetime.with_second(0)
+            ts: Duration::milliseconds(
+                datetime
+                    .with_second(0)
                     .unwrap()
                     .with_nanosecond(0)
-                    .unwrap().timestamp_millis()),
+                    .unwrap()
+                    .timestamp_millis(),
+            ),
             change,
             close,
             high,
@@ -323,15 +327,15 @@ impl Token {
         //check if vol is enough in the selected timeframe
         self.vol = self.candlesticks.iter().map(|x| x.vol).sum();
         // Sum vol, changes, and range from candlesticks
-            let (vol, change, range) = self.candlesticks.iter().fold(
-                (0.0, 0.0, 0.0),
-                |(vol_acc, change_acc, range_acc), x| {
-                    (vol_acc + x.vol, change_acc + x.change, range_acc + x.range)
-                },
-            );
-            self.vol = vol;
-            self.change = change;
-            self.range = range;
+        let (vol, change, range) = self.candlesticks.iter().fold(
+            (0.0, 0.0, 0.0),
+            |(vol_acc, change_acc, range_acc), x| {
+                (vol_acc + x.vol, change_acc + x.change, range_acc + x.range)
+            },
+        );
+        self.vol = vol;
+        self.change = change;
+        self.range = range;
 
         let changes: Vec<f32> = self
             .candlesticks

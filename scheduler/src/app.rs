@@ -307,7 +307,8 @@ impl App {
         tokens: Vec<Token>,
     ) -> Result<Vec<Token>, Box<dyn Error>> {
         let xdt = self.time.utc;
-        let dt = (xdt.with_second(0).unwrap().with_nanosecond(0).unwrap()-Duration::minutes(1)) - (Duration::minutes(timeframe-1));
+        let dt = (xdt.with_second(0).unwrap().with_nanosecond(0).unwrap() - Duration::minutes(1))
+            - (Duration::minutes(timeframe - 1));
         //last -timeframe- candles
         let get_candles_query = self
             .db_session
@@ -338,13 +339,12 @@ impl App {
                     }
                 };
 
-
                 let last_min = Utc::now()
                     .with_second(0)
                     .unwrap()
                     .with_nanosecond(0)
-                    .unwrap()-Duration::minutes(1);
-
+                    .unwrap()
+                    - Duration::minutes(1);
 
                 if let Some(rows) = self
                     .db_session
@@ -360,12 +360,13 @@ impl App {
                         .filter_map(Result::ok)
                         .collect();
 
-                token.price = tickers.last().unwrap().0;
-                token.candlesticks.sort_by(|a, b| {
+                    token.price = tickers.last().unwrap().0;
+                    token.candlesticks.sort_by(|a, b| {
                         a.ts.partial_cmp(&b.ts)
                             .expect("unable to compare timestamps")
-                });
-                    let last_candle = Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
+                    });
+                    let last_candle =
+                        Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
                     token.add_or_update_candle(last_candle);
                 };
 
@@ -374,8 +375,8 @@ impl App {
                 }
                 token.sum_candles();
                 token.candlesticks.sort_by(|a, b| {
-                        a.ts.partial_cmp(&b.ts)
-                            .expect("unable to compare timestamps")
+                    a.ts.partial_cmp(&b.ts)
+                        .expect("unable to compare timestamps")
                 });
                 Ok(token)
             }
