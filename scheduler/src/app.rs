@@ -148,34 +148,7 @@ impl App {
 
     pub async fn update_order_states(&mut self, mut tokens: Vec<Token>) -> Result<Vec<Token>> {
         for t in tokens.iter_mut() {
-            if !self.exchange.enable_trading {
-                //Set simulated orders as filled
-                for order in
-                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
-                        o.state == OrderState::Live && o.prev_state != OrderState::Created
-                    })
-                {
-                    let mut rng = thread_rng();
-                    let random_state = if rng.gen_bool(1.0 / 3.0) {
-                        OrderState::Cancelled
-                    } else {
-                        OrderState::Filled
-                    };
-
-                    order.state = random_state;
-                    t.status = if order.state == OrderState::Filled {
-                        match order.side {
-                            Side::Buy => token::Status::Trading,
-                            Side::Sell => token::Status::Selling,
-                        }
-                    } else {
-                        match order.side {
-                            Side::Buy => token::Status::Buying,
-                            Side::Sell => token::Status::Trading,
-                        }
-                    }
-                }
-            } else {
+            if self.exchange.enable_trading {
                 for order in
                     t.orders.as_mut().unwrap().iter_mut().filter(|o| {
                         o.state == OrderState::Live && o.prev_state != OrderState::Created
@@ -200,6 +173,33 @@ impl App {
                                 },
                                 OrderState::Cancelled => token::Status::Trading,
                             };
+                        }
+                    }
+                }
+            } else {
+                //Set simulated orders as filled
+                for order in
+                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
+                        o.state == OrderState::Live && o.prev_state != OrderState::Created
+                    })
+                {
+                    let mut rng = thread_rng();
+                    let random_state = if rng.gen_bool(1.0 / 3.0) {
+                        OrderState::Cancelled
+                    } else {
+                        OrderState::Filled
+                    };
+
+                    order.state = random_state;
+                    t.status = if order.state == OrderState::Filled {
+                        match order.side {
+                            Side::Buy => token::Status::Trading,
+                            Side::Sell => token::Status::Selling,
+                        }
+                    } else {
+                        match order.side {
+                            Side::Buy => token::Status::Buying,
+                            Side::Sell => token::Status::Trading,
                         }
                     }
                 }
@@ -300,33 +300,90 @@ impl App {
         self.cooldown = Duration::milliseconds(num * 1000);
         self
     }
-    pub fn sum_candles(&mut self) -> &mut Self {
-        self.tokens.iter_mut().for_each(|t| {
-            //check if vol is enough in the selected timeframe
-            t.vol = t.candlesticks.iter().map(|x| x.vol).sum();
 
-            //sum changes and range from candlesticks
-            t.change = t.candlesticks.iter().map(|x| x.change).sum();
-            let changes: Vec<f32> = t
-                .candlesticks
-                .clone()
-                .into_iter()
-                .map(|x| x.change)
-                .collect();
-            t.std_deviation = std_deviation(&changes).unwrap_or(0.0);
-            t.range = t.candlesticks.iter().map(|x| x.range).sum();
-            t.price = t
-                .candlesticks
-                .last()
-                .expect(&format!(
-                    "Failed to read px of candles {:#?}",
-                    t.candlesticks
-                ))
-                .close;
-        });
-        self
+    pub async fn update_candles(
+        &self,
+        timeframe: i64,
+        tokens: Vec<Token>,
+    ) -> Result<Vec<Token>, Box<dyn Error>> {
+        let xdt = self.time.utc;
+        let dt = (xdt.with_second(0).unwrap().with_nanosecond(0).unwrap()-Duration::minutes(1)) - (Duration::minutes(timeframe-1));
+        //last -timeframe- candles
+        let get_candles_query = self
+            .db_session
+            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts >= ?")
+            .await?;
+
+        //Last min tickers
+        let get_tickers_query = self
+            .db_session
+            .prepare(
+                "SELECT last, lastsz, ts FROM tickers WHERE instid=? AND ts >= ? order by ts asc ",
+            )
+            .await?;
+
+        stream::iter(tokens.into_iter().map(|mut token| {
+            let get_candle_stmt = get_candles_query.clone();
+            let get_ticker_stmt = get_tickers_query.clone();
+            async move {
+                if let Some(rows) = self
+                    .db_session
+                    .execute(&get_candle_stmt, (&token.instid, dt.timestamp_millis()))
+                    .await?
+                    .rows
+                {
+                    for row in rows.into_typed::<Candlestick>() {
+                        let candle = row.unwrap_or(Candlestick::new());
+                        token.add_or_update_candle(candle)
+                    }
+                };
+
+
+                let last_min = Utc::now()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()-Duration::minutes(1);
+
+
+                if let Some(rows) = self
+                    .db_session
+                    .execute(
+                        &get_ticker_stmt,
+                        (&token.instid, last_min.timestamp_millis()),
+                    )
+                    .await?
+                    .rows
+                {
+                    let tickers: Vec<(f64, f64, Duration)> = rows
+                        .into_typed::<(f64, f64, Duration)>()
+                        .filter_map(Result::ok)
+                        .collect();
+
+                token.price = tickers.last().unwrap().0;
+                token.candlesticks.sort_by(|a, b| {
+                        a.ts.partial_cmp(&b.ts)
+                            .expect("unable to compare timestamps")
+                });
+                    let last_candle = Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
+                    token.add_or_update_candle(last_candle);
+                };
+
+                while token.candlesticks.len() > timeframe as usize {
+                    token.candlesticks.remove(0);
+                }
+                token.sum_candles();
+                token.candlesticks.sort_by(|a, b| {
+                        a.ts.partial_cmp(&b.ts)
+                            .expect("unable to compare timestamps")
+                });
+                Ok(token)
+            }
+        }))
+        .buffered(5000)
+        .try_collect::<Vec<Token>>()
+        .await
     }
-
     pub async fn buy_tokens(
         &mut self,
         mut account: Account,
@@ -517,7 +574,7 @@ impl App {
     pub fn filter_invalid(&mut self, strategy: &Strategy, spendable: f64) -> &mut Self {
         let deny_list = self.deny_list.clone();
         self.tokens
-            .retain(|t| App::is_valid_token(t, &deny_list, strategy, spendable));
+            .retain(|t| t.is_valid(&deny_list, strategy, spendable));
         self.tokens.sort_by(|a, b| {
             b.change
                 .partial_cmp(&a.change)
@@ -526,39 +583,6 @@ impl App {
         self
     }
 
-    fn is_valid_token(
-        t: &Token,
-        deny_list: &[String],
-        strategy: &Strategy,
-        spendable: f64,
-    ) -> bool {
-        let denied = deny_list.iter().any(|i| format!("{}-USDT", i) == t.instid);
-        let pcc = t
-            .candlesticks
-            .iter()
-            // At least half of the candles should have higher volume than our spendable
-            .filter(|x| x.vol > spendable && x.change > 0.00)
-            .count();
-        let blank_candle = Candlestick::new();
-        let last_candle = t.candlesticks.last().unwrap_or(&blank_candle);
-        let last_candle_1 = t
-            .candlesticks
-            .get(t.candlesticks.len() - 2)
-            .unwrap_or(&blank_candle);
-
-        !denied
-            // No missing candles in our data
-            && t.candlesticks.len() >= strategy.timeframe as usize
-            // Half of the candles of our timeframe had more volume than our spendable
-            && pcc >= strategy.timeframe as usize / 2
-            && t.change >= strategy.min_change
-            && t.std_deviation >= strategy.min_deviation
-            && last_candle.vol >= spendable
-            // Half of the desired change should come from the last candle to be selected
-            && last_candle.change > 0.0
-            && last_candle_1.change > 0.0
-            && t.vol > strategy.min_vol.unwrap()
-    }
     pub fn update_cooldown(&mut self, portfolio: &[Token]) -> &mut Self {
         for t in self.tokens.iter_mut() {
             if portfolio.iter().any(|x| t.instid == x.instid) {
@@ -575,97 +599,14 @@ impl App {
         }
         self
     }
-    pub async fn update_candles(
-        &self,
-        timeframe: i64,
-        tokens: Vec<Token>,
-    ) -> Result<Vec<Token>, Box<dyn Error>> {
+
+    pub async fn fetch_tokens(&mut self, timeframe: i64) -> &mut Self {
         let xdt = self.time.utc - Duration::minutes(timeframe);
         let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
 
-        let get_candles_query = self
-            .db_session
-            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts >= ? order by ts asc")
-            .await?;
-        let get_tickers_query = self
-            .db_session
-            .prepare(
-                "SELECT last, lastsz, ts FROM tickers WHERE instid=? AND ts >= ? order by ts asc;",
-            )
-            .await?;
-
-        stream::iter(tokens.into_iter().map(|mut token| {
-            let get_candle_stmt = get_candles_query.clone();
-            let get_ticker_stmt = get_tickers_query.clone();
-            log::error!("SELECT * FROM candle1m WHERE instid='{}' AND ts >= '{}' order by ts asc", token.instid, dt.to_rfc3339_opts(SecondsFormat::Millis, true));
-            let last_min = (Utc::now() - Duration::minutes(1)).with_second(0).unwrap().with_nanosecond(0).unwrap();
-            log::error!("SELECT last, lastsz, ts FROM tickers WHERE instid='{}' AND ts >= '{}' order by ts asc", token.instid, last_min.to_rfc3339_opts(SecondsFormat::Millis, true));
-            async move {
-                if let Some(rows) = self
-                    .db_session
-                    .execute(&get_candle_stmt, (&token.instid, dt.to_rfc3339_opts(SecondsFormat::Millis, true)))
-                    .await?
-                    .rows
-                {
-                    for row in rows.into_typed::<Candlestick>() {
-                        let candle = row.unwrap_or(Candlestick::new());
-                        if let Some(ci) = token.candlesticks.iter().position(|c| candle.ts == c.ts)
-                        {
-                            token.candlesticks[ci] = candle;
-                        } else {
-                            token.candlesticks.push(candle);
-                        }
-                    }
-                };
-
-                let last_min = Utc::now() - Duration::minutes(1);
-                if let Some(rows) = self
-                    .db_session
-                    .execute(
-                        &get_ticker_stmt,
-                        (
-                            &token.instid,
-                            last_min.to_rfc3339_opts(SecondsFormat::Millis, true),
-                        ),
-                    )
-                    .await?
-                    .rows
-                {
-                    let tickers: Vec<(f64, f64, Duration)> = rows
-                        .into_typed::<(f64, f64, Duration)>()
-                        .filter_map(Result::ok)
-                        .collect();
-
-                    if let Some(ticker_candle) = Candlestick::from_tickers(&token.instid, &tickers)
-                    {
-                        token.add_or_update_candle(ticker_candle);
-                    }
-                };
-
-                token
-                    .candlesticks
-                    .retain(|c| c.ts >= Duration::milliseconds(dt.timestamp_millis()));
-                let changes: Vec<f32> = token
-                    .candlesticks
-                    .clone()
-                    .into_iter()
-                    .map(|x| x.change)
-                    .collect();
-                token.std_deviation = std_deviation(&changes).unwrap_or(0.0);
-                Ok(token)
-            }
-        }))
-        .buffer_unordered(10) // Adjust the concurrency level according to your system's capabilities
-        .try_collect::<Vec<Token>>()
-        .await
-    }
-
-    pub async fn fetch_top_tokens(&mut self, timeframe: i64) -> &mut Self {
-        let xdt = Utc::now() - Duration::minutes(timeframe);
-        let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
         let query = format!(
             "SELECT * FROM okx.candle1m WHERE ts >= '{}'",
-            dt.to_rfc3339_opts(SecondsFormat::Millis, true)
+            dt.timestamp_millis()
         );
 
         if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
@@ -680,33 +621,7 @@ impl App {
                     self.tokens.push(new_token);
                 }
             }
-        }
-
-        self.tokens.iter_mut().for_each(|t| {
-            t.candlesticks.sort_by(|a, b| {
-                a.ts.partial_cmp(&b.ts)
-                    .expect("unable to compare timestamps")
-            });
-
-            // Sum vol, changes, and range from candlesticks
-            t.vol = t.candlesticks.iter().map(|x| x.vol).sum();
-            t.change = t.candlesticks.iter().map(|x| x.change).sum();
-            let changes: Vec<f32> = t.candlesticks.iter().map(|x| x.change).collect();
-            t.std_deviation = std_deviation(&changes).unwrap_or(0.0);
-            t.range = t.candlesticks.iter().map(|x| x.range).sum();
-            t.price = t
-                .candlesticks
-                .last()
-                .expect(&format!(
-                    "Failed to read px of candles {:#?}",
-                    t.candlesticks
-                ))
-                .close;
-        });
-
-        self.tokens
-            .retain(|t| t.candlesticks.len() >= timeframe as usize);
-
+        };
         self
     }
 }

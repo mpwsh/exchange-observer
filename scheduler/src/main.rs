@@ -41,24 +41,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.time.now = time::Instant::now();
 
         //Retrieve and process top tokens
-        app.fetch_top_tokens(cfg.strategy.timeframe)
-            .await
-            .filter_invalid(&cfg.strategy, account.balance.spendable)
+        app.fetch_tokens(cfg.strategy.timeframe)
+            .await;
+        app.tokens = app.update_candles(cfg.strategy.timeframe, app.tokens.clone()).await.unwrap();
+        app.filter_invalid(&cfg.strategy, account.balance.spendable)
             .get_tickers_full()
-            .await
-            .clean_top(cfg.strategy.top);
+            .await;
 
-        //Portoflio
-        app.update_cooldown(&account.portfolio);
+        app.clean_top(cfg.strategy.top);
+
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
+        //Portoflio
+        app.update_cooldown(&account.portfolio);
 
         account.portfolio = app.reset_timeouts(account.portfolio, &cfg.strategy);
         account.portfolio = app
-            .update_candles(cfg.strategy.timeframe, account.portfolio)
-            .await?;
-
+         .update_candles(cfg.strategy.timeframe, account.portfolio)
+           .await?;
         if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
             //Check and update order states
             account.portfolio = app.update_order_states(account.portfolio).await?;

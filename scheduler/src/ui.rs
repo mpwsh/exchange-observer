@@ -172,7 +172,9 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "Symbol",
                 "Candles",
                 "LastCand",
+                "Price",
                 " Balance ",
+                " Sell Balance ",
                 "Change",
                 "Earnings",
                 "Timeout",
@@ -218,9 +220,13 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Green),
                 );
             };
-
+            //price
+            token_row.push(
+                    Cell::new(t.price.to_string())
+                        .set_alignment(CellAlignment::Center)
+                        .fg(Color::DarkGrey),
+                );
             //Avail Balance
-
             token_row.push({
                 let formatted_value = if t.balance.available == 0.0 {
                     "---".to_string()
@@ -230,6 +236,22 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     format!("{:.2}", t.balance.available)
                 } else {
                     format!("{:.0}", t.balance.available)
+                };
+
+                Cell::new(formatted_value)
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold)
+            });
+            //Sell Balance
+            token_row.push({
+                let formatted_value = if t.balance.available == 0.0 {
+                    "---".to_string()
+                } else if t.balance.available > 0.0 && t.balance.available < 10.0 {
+                    format!("{:.6}", t.balance.available - calculate_fees(t.balance.available,t.price))
+                } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
+                    format!("{:.2}", t.balance.available - calculate_fees(t.balance.available,t.price))
+                } else {
+                    format!("{:.0}", t.balance.available - calculate_fees(t.balance.available,t.price))
                 };
 
                 Cell::new(formatted_value)
@@ -261,6 +283,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 );
             }
             //Earnings
+
             if t.balance.available > 0.0 {
                 let earnings = (t.balance.current * t.price) - (t.buy_price * t.balance.start);
                 if earnings < 0.0 {

@@ -112,7 +112,12 @@ impl Account {
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
         self
     }
-
+    pub fn sum_token_candles(&mut self) -> &Self {
+        self.portfolio.iter_mut().for_each(|t| {
+            t.sum_candles();
+        });
+        self
+    }
     pub fn calculate_earnings(&mut self) -> &mut Self {
         self.earnings = self.balance.current - self.balance.start;
         self
