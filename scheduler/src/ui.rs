@@ -28,7 +28,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 &vol_header,
                 "Change (24h)",
                 "Volume (24h)",
-                "Status",
+                " Status ",
             ]);
         //print token rows
         for t in app.tokens.iter() {
@@ -172,9 +172,9 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "Symbol",
                 "Candles",
                 "LastCand",
-                "Balance",
-                "Now Px",
-                "Buy Px",
+                "Price",
+                " Balance ",
+                " Sell Balance ",
                 "Change",
                 "Earnings",
                 "Timeout",
@@ -182,8 +182,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "[B] OrderState",
                 "[S] OrderID",
                 "[S] OrderState",
-                "Reason",
-                "Status",
+                " Status ",
             ]);
         //print token rows
         for t in account.portfolio.iter() {
@@ -221,26 +220,54 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Green),
                 );
             };
-
+            //price
+            token_row.push(
+                Cell::new(t.price.to_string())
+                    .set_alignment(CellAlignment::Center)
+                    .fg(Color::DarkGrey),
+            );
             //Avail Balance
-            token_row.push(
-                Cell::new(format!("{}", t.balance.available))
-                    .set_alignment(CellAlignment::Center)
-                    .add_attribute(Attribute::Bold),
-            );
+            token_row.push({
+                let formatted_value = if t.balance.available == 0.0 {
+                    "---".to_string()
+                } else if t.balance.available > 0.0 && t.balance.available < 10.0 {
+                    format!("{:.6}", t.balance.available)
+                } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
+                    format!("{:.2}", t.balance.available)
+                } else {
+                    format!("{:.0}", t.balance.available)
+                };
 
-            //Current Price
-            token_row.push(
-                Cell::new(format!("{}", t.price))
+                Cell::new(formatted_value)
                     .set_alignment(CellAlignment::Center)
-                    .add_attribute(Attribute::Bold),
-            );
-            //Buy price
-            token_row.push(
-                Cell::new(format!("{}", t.buy_price))
+                    .add_attribute(Attribute::Bold)
+            });
+            //Sell Balance
+            token_row.push({
+                let formatted_value = if t.balance.available == 0.0 {
+                    "---".to_string()
+                } else if t.balance.available > 0.0 && t.balance.available < 10.0 {
+                    format!(
+                        "{:.6}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
+                } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
+                    format!(
+                        "{:.2}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
+                } else {
+                    format!(
+                        "{:.0}",
+                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                    )
+                };
+
+                Cell::new(formatted_value)
                     .set_alignment(CellAlignment::Center)
-                    .add_attribute(Attribute::Bold),
-            );
+                    .add_attribute(Attribute::Bold)
+            });
+
             //change
             if t.change < 0.00 {
                 token_row.push(
@@ -265,24 +292,34 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 );
             }
             //Earnings
-            let earnings = (t.balance.current * t.price) - (t.buy_price * t.balance.start);
-            if earnings < 0.0 {
-                token_row.push(
-                    Cell::new(format!("$ {:.2}", earnings))
-                        .set_alignment(CellAlignment::Center)
-                        .add_attribute(Attribute::Bold)
-                        .fg(Color::Red),
-                );
-            } else if earnings > 0.0 {
-                token_row.push(
-                    Cell::new(format!("$ {:.2}", earnings))
-                        .set_alignment(CellAlignment::Center)
-                        .add_attribute(Attribute::Bold)
-                        .fg(Color::Green),
-                );
+
+            if t.balance.available > 0.0 {
+                let earnings = (t.balance.current * t.price) - (t.buy_price * t.balance.start);
+                if earnings < 0.0 {
+                    token_row.push(
+                        Cell::new(format!("$ {:.2}", earnings))
+                            .set_alignment(CellAlignment::Center)
+                            .add_attribute(Attribute::Bold)
+                            .fg(Color::Red),
+                    );
+                } else if earnings > 0.0 {
+                    token_row.push(
+                        Cell::new(format!("$ {:.2}", earnings))
+                            .set_alignment(CellAlignment::Center)
+                            .add_attribute(Attribute::Bold)
+                            .fg(Color::Green),
+                    );
+                } else {
+                    token_row.push(
+                        Cell::new(format!("$ {:.2}", t.earnings))
+                            .set_alignment(CellAlignment::Center)
+                            .add_attribute(Attribute::Bold)
+                            .fg(Color::DarkGrey),
+                    );
+                }
             } else {
                 token_row.push(
-                    Cell::new(format!("$ {:.2}", t.earnings))
+                    Cell::new("---".to_string())
                         .set_alignment(CellAlignment::Center)
                         .add_attribute(Attribute::Bold)
                         .fg(Color::DarkGrey),
@@ -319,7 +356,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .filter(|o| o.side == Side::Buy)
                 .map(|o| {
                     format!(
-                        "{}",
+                        "{:.8}..",
                         if trade_enabled {
                             o.ord_id.clone()
                         } else {
@@ -358,7 +395,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .filter(|o| o.side == Side::Sell)
                 .map(|o| {
                     format!(
-                        "{}",
+                        "{:.8}..",
                         if trade_enabled {
                             o.ord_id.clone()
                         } else {
@@ -388,12 +425,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
-            //reason
-            token_row.push(
-                Cell::new(format!("{:?}", t.exit_reason))
-                    .set_alignment(CellAlignment::Center)
-                    .add_attribute(Attribute::Bold),
-            );
+
             //status
             match t.status {
                 token::Status::Trading => token_row.push(

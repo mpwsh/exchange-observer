@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use exchange_observer::{Authentication, Exchange, Strategy};
+use exchange_observer::{Authentication, Strategy};
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -47,7 +47,7 @@ impl Account {
         }
     }
 
-    pub fn calculate_balance(&mut self, mut app: &mut crate::App) -> &mut Self {
+    pub fn calculate_balance(&mut self, app: &mut crate::App) -> &mut Self {
         let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
 
         for t in self.portfolio.iter_mut() {
@@ -112,7 +112,12 @@ impl Account {
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
         self
     }
-
+    pub fn sum_token_candles(&mut self) -> &Self {
+        self.portfolio.iter_mut().for_each(|t| {
+            t.sum_candles();
+        });
+        self
+    }
     pub fn calculate_earnings(&mut self) -> &mut Self {
         self.earnings = self.balance.current - self.balance.start;
         self

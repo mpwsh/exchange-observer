@@ -73,6 +73,47 @@ impl Candlestick {
             vol: 0.0,
         }
     }
+    pub fn from_tickers(instid: &str, tickers: &[(f64, f64, Duration)]) -> Option<Candlestick> {
+        if tickers.is_empty() {
+            return None;
+        }
+
+        let open = tickers.first()?.0;
+        let close = tickers.last()?.0;
+
+        let mut high = tickers[0].0;
+        let mut low = tickers[0].0;
+        let mut vol = 0.0;
+
+        for &(price, size, _) in tickers {
+            high = high.max(price);
+            low = low.min(price);
+            vol += size * price;
+        }
+        let change = get_percentage_diff(close, open);
+        let range = get_percentage_diff(high, low);
+        let ts = tickers.last()?.2;
+        let datetime = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc) + ts;
+
+        Some(Candlestick {
+            instid: instid.to_string(),
+            ts: Duration::milliseconds(
+                datetime
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+                    .timestamp_millis(),
+            ),
+            change,
+            close,
+            high,
+            low,
+            open,
+            range,
+            vol,
+        })
+    }
 }
 
 #[serde_with::serde_as]
@@ -129,7 +170,11 @@ impl Token {
     }
 
     pub fn add_or_update_candle(&mut self, candle: Candlestick) {
-        if let Some(existing_candle) = self.candlesticks.iter_mut().find(|c| candle.ts == c.ts) {
+        if let Some(existing_candle) = self
+            .candlesticks
+            .iter_mut()
+            .find(|c| candle.ts.num_minutes() == c.ts.num_minutes())
+        {
             *existing_candle = candle;
         } else {
             self.candlesticks.push(candle);
@@ -252,6 +297,53 @@ impl Token {
             self.config.timeout = self.timeout;
             self.config.sell_floor = strategy.sell_floor.unwrap();
         };
+        self
+    }
+    pub fn is_valid(&self, deny_list: &[String], strategy: &Strategy, spendable: f64) -> bool {
+        let denied = deny_list
+            .iter()
+            .any(|i| format!("{}-USDT", i) == self.instid);
+        let pcc = self
+            .candlesticks
+            .iter()
+            // At least half of the candles should have higher volume than our spendable
+            .filter(|x| x.vol > spendable && x.change > 0.00)
+            .count();
+        let blank_candle = Candlestick::new();
+        let last_candle = self.candlesticks.last().unwrap_or(&blank_candle);
+
+        !denied
+            // No missing candles in our data
+            && self.candlesticks.len() >= strategy.timeframe as usize
+            && pcc >= strategy.timeframe as usize / 2
+            && self.change >= strategy.min_change
+            && self.std_deviation >= strategy.min_deviation
+            && last_candle.vol >= spendable
+            && last_candle.change > strategy.min_change_last_candle
+            && self.vol > strategy.min_vol.unwrap()
+    }
+
+    pub fn sum_candles(&mut self) -> &mut Self {
+        //check if vol is enough in the selected timeframe
+        self.vol = self.candlesticks.iter().map(|x| x.vol).sum();
+        // Sum vol, changes, and range from candlesticks
+        let (vol, change, range) = self.candlesticks.iter().fold(
+            (0.0, 0.0, 0.0),
+            |(vol_acc, change_acc, range_acc), x| {
+                (vol_acc + x.vol, change_acc + x.change, range_acc + x.range)
+            },
+        );
+        self.vol = vol;
+        self.change = change;
+        self.range = range;
+
+        let changes: Vec<f32> = self
+            .candlesticks
+            .clone()
+            .into_iter()
+            .map(|x| x.change)
+            .collect();
+        self.std_deviation = std_deviation(&changes).unwrap_or(0.0);
         self
     }
 }

@@ -41,24 +41,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.time.now = time::Instant::now();
 
         //Retrieve and process top tokens
-        app.fetch_top_tokens(cfg.strategy.timeframe)
+        app.fetch_tokens(cfg.strategy.timeframe).await;
+        app.tokens = app
+            .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await
-            .filter_invalid(&cfg.strategy, account.balance.spendable)
+            .unwrap();
+        app.filter_invalid(&cfg.strategy, account.balance.spendable)
             .get_tickers_full()
-            .await
-            .clean_top(cfg.strategy.top);
+            .await;
 
-        //Portoflio
-        app.update_cooldown(&account.portfolio);
+        app.clean_top(cfg.strategy.top);
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
+        //Portoflio
+        app.update_cooldown(&account.portfolio);
 
         account.portfolio = app.reset_timeouts(account.portfolio, &cfg.strategy);
         account.portfolio = app
             .update_candles(cfg.strategy.timeframe, account.portfolio)
-            .await;
-
+            .await?;
         if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
             //Check and update order states
             account.portfolio = app.update_order_states(account.portfolio).await?;
@@ -75,12 +77,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //Selling and token removal validation occurs on every loop
         account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;
-
-        //System && UI
-        //Save changes in actual account struct.
-        if app.pushover.enable {
-            app.send_notifications(&account).await?;
-        }
 
         account.balance.set_current(0.0);
         account
@@ -107,8 +103,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.time.elapsed = Duration::milliseconds(app.time.now.elapsed().as_millis() as i64);
 
         app.set_cooldown(cfg.strategy.cooldown);
-        if unix_timestamp.rem_euclid(NOTIFY_SECS) == 0 {
-            app.notify(
+
+        //Send notifications
+        if app.pushover.enable {
+            app.send_notifications(&account).await?;
+            if unix_timestamp.rem_euclid(NOTIFY_SECS) == 0 {
+                app.notify(
                 "Balance status".to_string(),
                 format!(
                     "Current: ${:.2} | Ch: {:.2}\nFees: {:.2} | Earned: {:.2}\nUptime: {} min\nStrategy: {:.7}",
@@ -121,6 +121,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ),
             )
             .await?;
+            }
         }
         app.cycles += 1;
     }
