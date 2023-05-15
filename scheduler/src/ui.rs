@@ -382,7 +382,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Buy)
-                .map(|o| format!("{}", o.state.to_string()))
+                .map(|o| o.state.to_string())
                 .collect();
 
             token_row.push(
@@ -421,7 +421,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Sell)
-                .map(|o| format!("{}", o.state.to_string()))
+                .map(|o| o.state.to_string())
                 .collect();
 
             token_row.push(

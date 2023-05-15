@@ -271,8 +271,14 @@ impl App {
         timeframe: i64,
         tokens: Vec<Token>,
     ) -> Result<Vec<Token>, Box<dyn Error>> {
-        let xdt = self.time.utc;
-        let dt = (xdt.with_second(0).unwrap().with_nanosecond(0).unwrap() - Duration::minutes(1))
+        let dt = (self
+            .time
+            .utc
+            .with_second(0)
+            .unwrap()
+            .with_nanosecond(0)
+            .unwrap()
+            - Duration::minutes(1))
             - (Duration::minutes(timeframe - 1));
         //last -timeframe- candles
         let get_candles_query = self
@@ -304,22 +310,12 @@ impl App {
                     }
                 };
 
-                let last_min = if token
-                    .candlesticks
-                    .last()
-                    .unwrap_or(&Candlestick::new())
-                    .ts
-                    .num_minutes()
-                    == Duration::milliseconds(Utc::now().timestamp_millis()).num_minutes()
-                {
-                    Utc::now()
-                        - Duration::seconds(1)
-                } else {
-                    Utc::now()
-                        .with_second(0)
-                        .unwrap()
-                        .with_nanosecond(0)
-                        .unwrap()
+                let dt = self.time.utc;
+                let last_min = match token.candlesticks.last() {
+                    Some(candlestick) if candlestick.ts.num_minutes() == dt.minute() as i64 => {
+                        dt - Duration::seconds(1)
+                    }
+                    _ => dt.with_second(0).unwrap().with_nanosecond(0).unwrap(),
                 };
 
                 if let Some(rows) = self
@@ -462,7 +458,7 @@ impl App {
     pub fn build_order_log(&self, order: &Order) -> String {
         format!(
                     "[{timestamp}] Order: {order_id} > {state}: {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
-                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S"),
                     order_id = order.ord_id,
                     state = order.state.to_string(),
                     token = order.inst_id,

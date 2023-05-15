@@ -75,10 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await
             .unwrap();
         app.filter_invalid(&cfg.strategy, account.balance.spendable);
-        app.clean_top(cfg.strategy.top)
-            .get_tickers()
-            .await;
-
+        app.clean_top(cfg.strategy.top).get_tickers().await;
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
@@ -111,7 +108,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .calculate_balance(&mut app)
             .calculate_earnings()
             .clean_portfolio();
-
 
         // UI Display
         if cfg.ui.enable {

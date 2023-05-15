@@ -93,7 +93,8 @@ impl Candlestick {
         let change = get_percentage_diff(close, open);
         let range = get_percentage_diff(high, low);
         let ts = tickers.last()?.2;
-        let datetime = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + ts;
+        let datetime =
+            DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + ts;
 
         Some(Candlestick {
             instid: instid.to_string(),
@@ -239,14 +240,7 @@ impl Token {
             && !token_found
         {
             Some(ExitReason::FloorReached)
-        } else if (self.candlesticks.last().unwrap().change < strategy.min_change_last_candle)
-            && self
-                .candlesticks
-                .get(self.candlesticks.len() - 1)
-                .unwrap()
-                .change
-                > strategy.cashout
-        {
+        } else if self.change > strategy.cashout {
             Some(ExitReason::Cashout)
         } else {
             None
