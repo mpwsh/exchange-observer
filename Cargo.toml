@@ -3,6 +3,5 @@ members = [
     "lib",
     "producer",
     "consumer",
-    "scheduler",
-    "console"
+    "scheduler"
 ]
