@@ -93,7 +93,8 @@ impl Candlestick {
         let change = get_percentage_diff(close, open);
         let range = get_percentage_diff(high, low);
         let ts = tickers.last()?.2;
-        let datetime = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc) + ts;
+        let datetime =
+            DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + ts;
 
         Some(Candlestick {
             instid: instid.to_string(),
@@ -235,6 +236,7 @@ impl Token {
             Some(ExitReason::Cashout)
         } else if self.change >= sell_floor
             && self.timeout < Duration::seconds(strategy.timeout - 5)
+            && self.balance.available > 0.0
             && !token_found
         {
             Some(ExitReason::FloorReached)
@@ -334,7 +336,9 @@ impl Token {
             },
         );
         self.vol = vol;
-        self.change = change;
+        if self.status == token::Status::Waiting {
+            self.change = change;
+        }
         self.range = range;
 
         let changes: Vec<f32> = self
