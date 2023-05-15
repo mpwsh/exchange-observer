@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use exchange_observer::{Authentication, Strategy};
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Account {
     pub name: String,
     pub authentication: Authentication,
@@ -107,17 +107,17 @@ impl Account {
                 }
             }
             self.balance.current += t.balance.current * t.price;
+            if t.balance.current > 0.0 {
+                t.change = get_percentage_diff(t.price, t.buy_price);
+            } else {
+                t.change = 0.0;
+            }
         }
         self.balance.current += self.balance.available;
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
         self
     }
-    pub fn sum_token_candles(&mut self) -> &Self {
-        self.portfolio.iter_mut().for_each(|t| {
-            t.sum_candles();
-        });
-        self
-    }
+
     pub fn calculate_earnings(&mut self) -> &mut Self {
         self.earnings = self.balance.current - self.balance.start;
         self

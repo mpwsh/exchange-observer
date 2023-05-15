@@ -100,6 +100,7 @@ pub struct Strategy {
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Ui {
+    pub enable: bool,
     pub dashboard: bool,
     pub portfolio: bool,
     pub strategy: bool,
@@ -272,6 +273,7 @@ impl Strategy {
 impl Ui {
     fn default() -> Self {
         Self {
+            enable: true,
             dashboard: true,
             portfolio: true,
             strategy: true,

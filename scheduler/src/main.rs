@@ -1,15 +1,15 @@
 pub use prelude::*;
-
 mod app;
 mod models;
 mod okx;
 pub mod prelude;
+mod server;
 mod ui;
 mod utils;
-
 const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
 const ORDER_CHECK_DELAY_SECS: i64 = 3;
+const WEBSOCKET_SEND_SECS: i64 = 1;
 
 pub const BASE_URL: &str = "https://www.okx.com";
 pub const ORDERS_ENDPOINT: &str = "/api/v5/trade/order";
@@ -27,30 +27,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
     account.authentication = cfg.exchange.clone().unwrap_or_default().authentication;
     //cfg.strategy.sane_defaults();
     app.set_cooldown(cfg.strategy.cooldown);
-    app.term.hide_cursor()?;
-
+    if cfg.ui.enable {
+        app.term.hide_cursor()?;
+    }
     app.save_strategy(&cfg.strategy).await?;
 
     if cfg.strategy.quickstart {
         app.set_cooldown(1);
     };
+    let server = if cfg.server.clone().unwrap_or_default().enable {
+        // Start the WebSocket server in a new thread
+        // Insert the write part of this peer to the peer map.
+        Some(server::WebSocket::run("127.0.0.1:9002").await)
+    } else {
+        None
+    };
     loop {
-        app.term.move_cursor_to(0, 0)?;
+        if cfg.ui.enable {
+            app.term.move_cursor_to(0, 0)?;
+        }
         app.time.utc = Utc::now();
         let unix_timestamp = app.time.utc.timestamp();
         app.time.now = time::Instant::now();
-
+        if let Some(server) = &server {
+            /*
+            if !account.portfolio.is_empty() {
+                let data =
+                    server::Message::text(serde_json::to_string(&account.portfolio).unwrap());
+                server.send(data).await;
+            }
+            if !app.tokens.is_empty() {
+                let data = server::Message::text(serde_json::to_string(&app.tokens).unwrap());
+                server.send(data).await;
+            }
+            let data = server::Message::text(serde_json::to_string(&account.balance).unwrap());
+            server.send(data).await;
+            */
+            if unix_timestamp.rem_euclid(WEBSOCKET_SEND_SECS) == 0 {
+                let data = server::Message::text(serde_json::to_string(&account).unwrap());
+                server.send(data).await;
+            }
+        };
         //Retrieve and process top tokens
         app.fetch_tokens(cfg.strategy.timeframe).await;
         app.tokens = app
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await
             .unwrap();
-        app.filter_invalid(&cfg.strategy, account.balance.spendable)
-            .get_tickers_full()
+        app.filter_invalid(&cfg.strategy, account.balance.spendable);
+        app.clean_top(cfg.strategy.top)
+            .get_tickers()
             .await;
 
-        app.clean_top(cfg.strategy.top);
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
@@ -84,21 +112,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .calculate_earnings()
             .clean_portfolio();
 
-        //update tickers
-        account.portfolio = app.get_tickers_simple(account.portfolio).await;
 
-        //clear screen
-        if app.cycles.rem_euclid(REFRESH_CYCLES) == 0 {
-            app.term.clear_screen()?;
+        // UI Display
+        if cfg.ui.enable {
+            if app.cycles.rem_euclid(REFRESH_CYCLES) == 0 {
+                app.term.clear_screen()?;
+            }
+            if app.logs.len() > 3 {
+                app.logs.drain(..app.logs.len() - 3);
+            };
+
+            for line in ui::display(&cfg, &app, &account)?.iter() {
+                app.term.write_line(&format!("{}", line))?
+            }
+        } else {
+            for log in app.logs.iter() {
+                log::info!("{}", log);
+            }
+            app.logs.clear();
         }
 
-        if app.logs.len() > 3 {
-            app.logs.drain(..app.logs.len() - 3);
-        };
-
-        for line in ui::display(&cfg, &app, &account)?.iter() {
-            app.term.write_line(&format!("{}", line))?
-        }
         app.time.uptime = app.time.uptime + app.time.elapsed;
         app.time.elapsed = Duration::milliseconds(app.time.now.elapsed().as_millis() as i64);
 

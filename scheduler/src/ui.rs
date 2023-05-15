@@ -172,7 +172,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "Symbol",
                 "Candles",
                 "LastCand",
-                "Price",
+                "    Price    ",
                 " Balance ",
                 " Sell Balance ",
                 "Change",
@@ -182,6 +182,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 "[B] OrderState",
                 "[S] OrderID",
                 "[S] OrderState",
+                " Exit Reason ",
                 " Status ",
             ]);
         //print token rows
@@ -222,7 +223,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             };
             //price
             token_row.push(
-                Cell::new(t.price.to_string())
+                Cell::new(format!("{:>14}", t.price.to_string()))
                     .set_alignment(CellAlignment::Center)
                     .fg(Color::DarkGrey),
             );
@@ -249,17 +250,20 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 } else if t.balance.available > 0.0 && t.balance.available < 10.0 {
                     format!(
                         "{:.6}",
-                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                        t.balance.available
+                            - calculate_fees(t.balance.available, app.exchange.taker_fee)
                     )
                 } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
                     format!(
                         "{:.2}",
-                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                        t.balance.available
+                            - calculate_fees(t.balance.available, app.exchange.taker_fee)
                     )
                 } else {
                     format!(
                         "{:.0}",
-                        t.balance.available - calculate_fees(t.balance.available, t.price)
+                        t.balance.available
+                            - calculate_fees(t.balance.available, app.exchange.taker_fee)
                     )
                 };
 
@@ -422,6 +426,13 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
 
             token_row.push(
                 Cell::new(order_states.last().unwrap_or(&String::from("---")))
+                    .set_alignment(CellAlignment::Center)
+                    .add_attribute(Attribute::Bold),
+            );
+
+            //Sell Reason
+            token_row.push(
+                Cell::new(format!("{:?}", t.exit_reason))
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
@@ -667,7 +678,8 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .set_width(400)
                 .set_header(vec!["Logs"]);
             for log in app.logs.iter() {
-                let row: Vec<Cell> = vec![Cell::new(log).set_alignment(CellAlignment::Left)];
+                let row: Vec<Cell> =
+                    vec![Cell::new(format!("{:<200}", log)).set_alignment(CellAlignment::Left)];
                 table_logs.add_row(row);
             }
             tables.push(table_logs);

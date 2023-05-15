@@ -208,42 +208,7 @@ impl App {
         Ok(tokens)
     }
 
-    pub async fn get_tickers_simple(&mut self, mut tokens: Vec<Token>) -> Vec<Token> {
-        for t in tokens.iter_mut() {
-            let empty_orders = Vec::new();
-            let filled_buy_orders = t
-                .orders
-                .as_ref()
-                .unwrap_or(&empty_orders)
-                .iter()
-                .any(|o| o.side == Side::Buy && o.state == OrderState::Filled);
-
-            if t.status == token::Status::Trading && filled_buy_orders {
-                let query = format!(
-                    "SELECT last FROM tickers WHERE instid='{}' order by ts desc limit 1;",
-                    t.instid,
-                );
-                if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
-                    for row in rows.into_typed::<(f64,)>() {
-                        let (last,): (f64,) = row.unwrap();
-                        t.price = last;
-                    }
-                };
-                if t.balance.current > 0.0 {
-                    t.change = get_percentage_diff(
-                        t.balance.current * t.price,
-                        t.buy_price * t.balance.start,
-                    );
-                }
-
-                //update timeout
-                t.timeout = t.timeout - self.time.elapsed;
-            }
-        }
-        tokens
-    }
-
-    pub async fn get_tickers_full(&mut self) -> &mut Self {
+    pub async fn get_tickers(&mut self) -> &mut Self {
         for t in self.tokens.iter_mut() {
             //Get ticker data
             let query = format!(
@@ -339,12 +304,23 @@ impl App {
                     }
                 };
 
-                let last_min = Utc::now()
-                    .with_second(0)
-                    .unwrap()
-                    .with_nanosecond(0)
-                    .unwrap()
-                    - Duration::minutes(1);
+                let last_min = if token
+                    .candlesticks
+                    .last()
+                    .unwrap_or(&Candlestick::new())
+                    .ts
+                    .num_minutes()
+                    == Duration::milliseconds(Utc::now().timestamp_millis()).num_minutes()
+                {
+                    Utc::now()
+                        - Duration::seconds(1)
+                } else {
+                    Utc::now()
+                        .with_second(0)
+                        .unwrap()
+                        .with_nanosecond(0)
+                        .unwrap()
+                };
 
                 if let Some(rows) = self
                     .db_session
@@ -360,7 +336,11 @@ impl App {
                         .filter_map(Result::ok)
                         .collect();
 
-                    token.price = tickers.last().unwrap().0;
+                    token.price = if let Some(ticker) = tickers.last() {
+                        ticker.0
+                    } else {
+                        token.price
+                    };
                     token.candlesticks.sort_by(|a, b| {
                         a.ts.partial_cmp(&b.ts)
                             .expect("unable to compare timestamps")
@@ -373,6 +353,7 @@ impl App {
                 while token.candlesticks.len() > timeframe as usize {
                     token.candlesticks.remove(0);
                 }
+                token.change = 0.0;
                 token.sum_candles();
                 token.candlesticks.sort_by(|a, b| {
                     a.ts.partial_cmp(&b.ts)
@@ -467,9 +448,13 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
+            t.timeout = t.timeout - self.time.elapsed;
             let found = self.tokens.iter().any(|s| t.instid == s.instid);
             if let Some(exit_reason) = t.get_exit_reason(strategy, found) {
                 t.exit_reason = Some(exit_reason);
+                if t.exit_reason.is_some() {
+                    t.status = token::Status::Selling;
+                }
             }
         }
         Ok(account)
@@ -501,8 +486,19 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
-            //Token has a reached a threahold and we still have > 10 USD of tokens to sell.
-            if t.exit_reason.is_some() && (t.balance.available * t.price > 10.0) {
+            let empty_orders = Vec::new();
+            let filled_sell_orders = t
+                .orders
+                .as_ref()
+                .unwrap_or(&empty_orders)
+                .iter()
+                .any(|o| o.side == Side::Sell && o.state == OrderState::Filled);
+
+            if t.status == token::Status::Selling
+                && !filled_sell_orders
+                && t.exit_reason.is_some()
+                && (t.balance.available * t.price) >= 5.0
+            {
                 //Update report
                 let usdt_balance = t.balance.available * t.price;
                 let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);
