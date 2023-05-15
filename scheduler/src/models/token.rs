@@ -240,8 +240,6 @@ impl Token {
             && !token_found
         {
             Some(ExitReason::FloorReached)
-        } else if self.change > strategy.cashout {
-            Some(ExitReason::Cashout)
         } else {
             None
         }
