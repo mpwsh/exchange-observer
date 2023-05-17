@@ -223,7 +223,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             };
             //price
             token_row.push(
-                Cell::new(format!("{:>14}", t.price.to_string()))
+                Cell::new(format!("{:>18}", t.price.to_string()))
                     .set_alignment(CellAlignment::Center)
                     .fg(Color::DarkGrey),
             );
@@ -253,7 +253,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         t.balance.available
                             - calculate_fees(t.balance.available, app.exchange.taker_fee)
                     )
-                } else if t.balance.available > 10.0 && t.balance.available < 100.0 {
+                } else if t.balance.available > 10.0 && t.balance.available < 1000.0 {
                     format!(
                         "{:.2}",
                         t.balance.available
@@ -331,7 +331,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             }
 
             //timeout
-            if t.timeout.num_seconds() == t.config.timeout.num_seconds() - 1 {
+            if t.timeout.num_seconds() >= t.config.timeout.num_seconds() - 1 {
                 token_row.push(
                     Cell::new("---".to_string())
                         .set_alignment(CellAlignment::Center)
@@ -350,7 +350,6 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                         .fg(Color::Yellow),
                 );
             }
-            let trade_enabled = app.exchange.enable_trading;
             //Buy Order IDs
             let order_ids: Vec<String> = t
                 .orders
@@ -358,16 +357,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Buy)
-                .map(|o| {
-                    format!(
-                        "{:.8}..",
-                        if trade_enabled {
-                            o.ord_id.clone()
-                        } else {
-                            o.cl_ord_id.clone()
-                        }
-                    )
-                })
+                .map(|o| format!("{:.8}..", o.id.clone()))
                 .collect();
 
             token_row.push(
@@ -390,23 +380,14 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .set_alignment(CellAlignment::Center)
                     .add_attribute(Attribute::Bold),
             );
-            //Sell Order IDs
+            //Sell Order ID
             let order_ids: Vec<String> = t
                 .orders
                 .as_ref()
                 .unwrap_or(&Vec::new())
                 .iter()
                 .filter(|o| o.side == Side::Sell)
-                .map(|o| {
-                    format!(
-                        "{:.8}..",
-                        if trade_enabled {
-                            o.ord_id.clone()
-                        } else {
-                            o.cl_ord_id.clone()
-                        }
-                    )
-                })
+                .map(|o| format!("{:.8}..", o.id.clone()))
                 .collect();
 
             token_row.push(
@@ -438,28 +419,18 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             );
 
             //status
-            match t.status {
-                token::Status::Trading => token_row.push(
-                    Cell::new(format!("{:?}", t.status))
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::White),
-                ),
-                token::Status::Selling => token_row.push(
-                    Cell::new(format!("{:?}", t.status))
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::DarkYellow),
-                ),
-                token::Status::Buying => token_row.push(
-                    Cell::new(format!("{:?}", t.status))
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::DarkBlue),
-                ),
-                token::Status::Waiting => token_row.push(
-                    Cell::new(format!("{:?}", t.status))
-                        .set_alignment(CellAlignment::Center)
-                        .fg(Color::DarkGrey),
-                ),
-            }
+            let color = match t.status {
+                token::Status::Waiting => Color::DarkGrey,
+                token::Status::Buying => Color::DarkYellow,
+                token::Status::Trading => Color::White,
+                token::Status::Selling => Color::DarkBlue,
+                token::Status::Exited => Color::DarkMagenta,
+            };
+            token_row.push(
+                Cell::new(format!("{:?}", t.status))
+                    .set_alignment(CellAlignment::Center)
+                    .fg(color),
+            );
 
             table_instids.add_row(token_row);
         }

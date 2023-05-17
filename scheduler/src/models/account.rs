@@ -47,7 +47,7 @@ impl Account {
         }
     }
 
-    pub fn calculate_balance(&mut self, app: &mut crate::App) -> &mut Self {
+    pub fn calculate_balance(&mut self, app: &mut App) -> &mut Self {
         let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
 
         for t in self.portfolio.iter_mut() {
@@ -55,6 +55,9 @@ impl Account {
                 for order in orders.iter_mut() {
                     if order.state == order.prev_state {
                         continue;
+                    }
+                    if order.id.is_empty() && order.state != OrderState::Created {
+                        order.state = OrderState::Failed;
                     }
                     let (price, size) = match (order.px.parse::<f64>(), order.sz.parse::<f64>()) {
                         (Ok(price), Ok(size)) => (price, size),
@@ -93,6 +96,7 @@ impl Account {
                                 Side::Sell => {
                                     t.balance.current -= size;
                                     self.balance.available += (size * price) - usdt_taker_fee;
+                                    app.logs.push(t.report.to_string());
                                 }
                             }
                         }
@@ -107,11 +111,7 @@ impl Account {
                 }
             }
             self.balance.current += t.balance.current * t.price;
-            if t.balance.current > 0.0 {
-                t.change = get_percentage_diff(t.price, t.buy_price);
-            } else {
-                t.change = 0.0;
-            }
+            t.change = get_percentage_diff(t.price, t.buy_price);
         }
         self.balance.current += self.balance.available;
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
@@ -130,20 +130,10 @@ impl Account {
 
     pub fn clean_portfolio(&mut self) -> &Self {
         self.portfolio.retain(|t| {
-            let exited = t.orders.as_ref().map_or(false, |orders| {
-                orders
-                    .iter()
-                    .any(|o| o.side == Side::Sell && o.state == OrderState::Filled)
-            });
-
-            let cancelled = t.orders.as_ref().map_or(false, |orders| {
-                orders
-                    .iter()
-                    .any(|o| o.side == Side::Buy && o.state == OrderState::Cancelled)
-            });
-
-            // Keep the token if it doesn't have a filled sell order or a cancelled buy order
-            !(exited || cancelled)
+            let exited = t.status == token::Status::Exited;
+            let waiting = t.status == token::Status::Waiting;
+            //let remaining_balance = (t.balance.available*t.price) > 5.0;
+            !(exited || waiting) // && !remaining_balance
         });
 
         self
@@ -152,11 +142,12 @@ impl Account {
         if self.balance.available >= self.balance.spendable
             && self.portfolio.len() < strategy.portfolio_size as usize
         {
-            let mut s = Token::new(&token.instid);
-            s.price = token.price;
-            s.candlesticks = token.candlesticks.clone();
-            s.buy_price = token.price;
-            self.portfolio.push(s);
+            let mut t = Token::new(&token.instid);
+            t.price = token.price;
+            t.status = token::Status::Buying;
+            t.candlesticks = token.candlesticks.clone();
+            t.buy_price = token.price;
+            self.portfolio.push(t);
         }
         self
     }

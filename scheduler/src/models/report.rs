@@ -38,3 +38,42 @@ impl Default for Report {
         }
     }
 }
+impl Report {
+    pub fn new(strategy_hash: &str, t: &Token) -> Self {
+        Self {
+            reason: t.exit_reason.clone().unwrap().to_string(),
+            ts: Utc::now().timestamp_millis().to_string(),
+            buy_price: t.price,
+            strategy: strategy_hash.to_string(),
+            change: t.change,
+            sell_price: t.price,
+            earnings: 0.0,
+            time_left: t.timeout.num_seconds(),
+            ..t.report.clone()
+        }
+    }
+    pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {
+        let payload = serde_json::to_string_pretty(&self).unwrap();
+        let payload = payload.replace("null", "0");
+        let query = format!("INSERT INTO okx.reports JSON '{}'", payload);
+        Ok(db_session.query(&*query, &[]).await?)
+    }
+}
+impl ToString for Report {
+    fn to_string(&self) -> String {
+        //let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + self.ts;
+        //timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+        format!(
+                    "[{}] - Round({}) - {} Report: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - ExitReason: {}",
+                    self.ts,
+                    self.round_id,
+                    self.instid,
+                    self.time_left,
+                    self.highest,
+                    self.lowest,
+                    self.change,
+                    self.earnings,
+                    self.reason
+                )
+    }
+}

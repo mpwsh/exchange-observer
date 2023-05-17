@@ -4,7 +4,7 @@ pub use crate::{
         account::{Account, Balance},
         report::Report,
         token::{self, Candlestick, Status, Token},
-        trade::{self, ExitReason, Order, OrderState, Side},
+        trade::{self, ExitReason, Order, Side, State as OrderState},
     },
     okx::*,
     utils::*,

@@ -49,23 +49,21 @@ impl Default for Time {
     }
 }
 impl App {
-    pub async fn init(cfg: &AppConfig) -> Self {
+    pub async fn init(cfg: &AppConfig) -> Result<Self> {
         let db_uri = format!("{}:{}", cfg.database.ip, cfg.database.port);
         let session: Session = SessionBuilder::new()
             .known_node(db_uri)
             .compression(Some(Compression::Snappy))
             .build()
-            .await
-            .unwrap();
+            .await?;
         session
             .use_keyspace(&cfg.database.keyspace, false)
-            .await
-            .unwrap();
+            .await?;
         let session = Arc::new(session);
         // Create a Tokio channel with a sender and receiver
         let (tx, rx) = mpsc::channel(100);
 
-        App {
+        Ok(App {
             round_id: 0,
             cycles: 0,
             cooldown: Duration::seconds(5),
@@ -79,31 +77,36 @@ impl App {
             term: Term::stdout(),
             pushover: cfg.pushover.clone().unwrap_or_default(),
             db_session: session,
-        }
+        })
     }
     pub async fn send_notifications(&self, account: &Account) -> Result<()> {
         for t in account.portfolio.iter() {
             //send notifications
-            if t.exit_reason == Some(ExitReason::Cashout) {
-                self.notify(
-                    "Cashout Triggered".to_string(),
-                    format!(
-                        "Token: {} | Change: %{:.2}\nEarnings: {:.2}\nTime Left: {} secs",
-                        t.instid, t.report.change, t.report.earnings, t.report.time_left,
-                    ),
-                )
-                .await?;
+            if let Some(reason) = t.exit_reason.as_ref() {
+                match reason {
+                    ExitReason::Cashout => {
+                        self.notify(
+                            "Cashout Triggered".to_string(),
+                            format!(
+                                "Token: {} | Change: %{:.2}\nEarnings: {:.2}\nTime Left: {} secs",
+                                t.instid, t.report.change, t.report.earnings, t.report.time_left,
+                            ),
+                        )
+                        .await?;
+                    }
+                    ExitReason::Stoploss => {
+                        self.notify(
+                            "Stoploss Triggered".to_string(),
+                            format!(
+                                "Token: {} | Change: %{:.2}\nLoss: {:.2}\nTime Left: {} secs",
+                                t.instid, t.report.change, t.report.earnings, t.report.time_left,
+                            ),
+                        )
+                        .await?;
+                    }
+                    _ => (),
+                }
             }
-            if t.exit_reason == Some(ExitReason::Stoploss) {
-                self.notify(
-                    "Stoploss Triggered".to_string(),
-                    format!(
-                        "Token: {} | Change: %{:.2}\nLoss: {:.2}\nTime Left: {} secs",
-                        t.instid, t.report.change, t.report.earnings, t.report.time_left,
-                    ),
-                )
-                .await?;
-            };
         }
         Ok(())
     }
@@ -118,18 +121,6 @@ impl App {
             .build();
 
         Ok(send_pushover_request(message).await.unwrap())
-    }
-    pub async fn save_report(&self, report: &Report) -> Result<QueryResult> {
-        let payload = serde_json::to_string_pretty(&report).unwrap();
-        let payload = payload.replace("null", "0");
-        let query = format!("INSERT INTO okx.reports JSON '{}'", payload);
-        Ok(self.db_session.query(&*query, &[]).await?)
-    }
-    pub async fn save_trade_order(&self, order: &Order) -> Result<QueryResult> {
-        let payload = serde_json::to_string_pretty(&order).unwrap();
-        let payload = payload.replace("null", "0");
-        let query = format!("INSERT INTO okx.orders JSON '{}'", payload);
-        Ok(self.db_session.query(&*query, &[]).await?)
     }
 
     pub fn update_reports(&mut self, mut tokens: Vec<Token>, timeout: i64) -> Vec<Token> {
@@ -147,65 +138,56 @@ impl App {
     }
 
     pub async fn update_order_states(&mut self, mut tokens: Vec<Token>) -> Result<Vec<Token>> {
-        for t in tokens.iter_mut() {
-            if self.exchange.enable_trading {
-                for order in
-                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
-                        o.state == OrderState::Live && o.prev_state != OrderState::Created
-                    })
-                {
-                    if !order.ord_id.is_empty() {
-                        let got_state = order.get_state(&self.exchange.authentication).await?;
-
-                        if order.state != got_state {
-                            order.state = got_state.clone();
-
-                            t.status = match order.state {
-                                OrderState::Filled => match order.side {
-                                    Side::Buy => token::Status::Trading,
-                                    Side::Sell => token::Status::Selling,
-                                },
-                                OrderState::Live
-                                | OrderState::Created
-                                | OrderState::PartiallyFilled => match order.side {
-                                    Side::Buy => token::Status::Buying,
-                                    Side::Sell => token::Status::Selling,
-                                },
-                                OrderState::Cancelled => token::Status::Trading,
-                            };
-                        }
-                    }
-                }
-            } else {
-                //Set simulated orders as filled
-                for order in
-                    t.orders.as_mut().unwrap().iter_mut().filter(|o| {
-                        o.state == OrderState::Live && o.prev_state != OrderState::Created
-                    })
-                {
-                    let mut rng = thread_rng();
-                    let random_state = if rng.gen_bool(1.0 / 3.0) {
-                        OrderState::Cancelled
-                    } else {
-                        OrderState::Filled
-                    };
-
-                    order.state = random_state;
-                    t.status = if order.state == OrderState::Filled {
-                        match order.side {
-                            Side::Buy => token::Status::Trading,
-                            Side::Sell => token::Status::Selling,
-                        }
-                    } else {
-                        match order.side {
-                            Side::Buy => token::Status::Buying,
-                            Side::Sell => token::Status::Trading,
-                        }
-                    }
-                }
+        if self.exchange.enable_trading {
+            for token in &mut tokens {
+                self.update_live_orders(token).await?;
+            }
+        } else {
+            for token in &mut tokens {
+                self.simulate_order_updates(token);
             }
         }
         Ok(tokens)
+    }
+
+    async fn update_live_orders(&mut self, token: &mut Token) -> Result<()> {
+        if let Some(orders) = &mut token.orders {
+            for order in orders
+                .iter_mut()
+                .filter(|o| o.state == OrderState::Live && o.prev_state != OrderState::Created)
+            {
+                let got_state = order.get_state(&self.exchange.authentication).await?;
+                if order.state != got_state {
+                    order.state = got_state.clone();
+                    token.status = token::Status::from_order(&order);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn simulate_order_updates(&self, token: &mut Token) {
+        let mut rng = thread_rng();
+        if let Some(orders) = &mut token.orders {
+            for order in orders
+                .iter_mut()
+                .filter(|o| o.state == OrderState::Live && o.prev_state != OrderState::Created)
+            {
+                let random_state = if rng.gen_bool(1.0 / 3.0) {
+                    OrderState::Cancelled
+                } else {
+                    OrderState::Filled
+                };
+                let random_order_id = if rng.gen_bool(1.0 / 3.0) {
+                    String::new()
+                } else {
+                    order.cl_ord_id.clone()
+                };
+                order.id = random_order_id;
+                order.state = random_state;
+                token.status = token::Status::from_order(&order);
+            }
+        }
     }
 
     pub async fn get_tickers(&mut self) -> &mut Self {
@@ -228,7 +210,7 @@ impl App {
         }
         self
     }
-    pub fn reset_timeouts(&mut self, mut tokens: Vec<Token>, strategy: &Strategy) -> Vec<Token> {
+    pub fn update_timeouts(&mut self, mut tokens: Vec<Token>, strategy: &Strategy) -> Vec<Token> {
         self.tokens.iter().for_each(|s| {
             if let Some(token) = tokens.iter_mut().find(|t| t.instid == s.instid) {
                 if token
@@ -242,12 +224,14 @@ impl App {
                 }
             }
         });
+
         for t in tokens.iter_mut() {
+            if !self.tokens.iter_mut().any(|top| top.instid == t.instid) {
+                t.timeout = t.timeout - self.time.elapsed;
+            };
+            //TODO: Expose as config?
+            //reset_timer_if_no_change maybe
             if t.change == 0.0 && t.timeout.num_seconds() <= 0 {
-                self.logs.push(format!(
-                    "Resetting timer on token {} due to same buy_price than potential sell_price",
-                    t.instid
-                ));
                 t.timeout = Duration::seconds(strategy.timeout)
             };
         }
@@ -377,17 +361,15 @@ impl App {
         }
 
         for t in account.portfolio.iter_mut() {
-            let empty_orders = Vec::new();
-
             let buy_orders = t
                 .orders
-                .as_ref()
-                .unwrap_or(&empty_orders)
+                .clone()
+                .unwrap_or_default()
                 .iter()
-                .find(|o| o.side == Side::Buy);
+                .any(|o| o.side == Side::Buy);
 
             //Only create buy order of no other buy order is live
-            if buy_orders.is_none() {
+            if !buy_orders {
                 let fee = calculate_fees(account.balance.spendable, self.exchange.taker_fee);
                 //will have this amount to buy tokens after deducting fees
                 let spendable_after_fees = account.balance.spendable - fee;
@@ -412,7 +394,7 @@ impl App {
                         .and_then(|orders| orders.last())
                         .unwrap();
                     //self.logs.push(format!("Buy order: {order:?}"));
-                    self.save_trade_order(order).await?;
+                    order.save(&self.db_session).await?;
                     let log_line = self.build_order_log(order);
                     self.logs.push(log_line);
                     self.round_id += 1;
@@ -444,22 +426,40 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
-            t.timeout = t.timeout - self.time.elapsed;
             let found = self.tokens.iter().any(|s| t.instid == s.instid);
-            if let Some(exit_reason) = t.get_exit_reason(strategy, found) {
-                t.exit_reason = Some(exit_reason);
-                if t.exit_reason.is_some() {
-                    t.status = token::Status::Selling;
-                }
+            t.exit_reason = t.get_exit_reason(strategy, found);
+            if t.exit_reason.is_some() && t.status != token::Status::Exited {
+                t.status = token::Status::Selling;
             }
         }
         Ok(account)
+    }
+    pub fn build_report_log(&self, order: &Order) -> String {
+        format!(
+                    "[{timestamp}] Order: {order_id} > {state}: {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
+                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S"),
+                    order_id = order.id,
+                    state = order.state.to_string(),
+                    token = order.inst_id,
+                    side = order.side.to_string(),
+                    ord_type = order.ord_type,
+                    price = order.px,
+                    size = order.sz,
+                    response = if self.exchange.enable_trading {
+                        match order.clone().response {
+                            Some(r) => r.data[0].clone().s_msg,
+                            None => format!("{:?}", order.response)
+                        }
+                    } else {
+                        String::from("N/A")
+                    }
+                )
     }
     pub fn build_order_log(&self, order: &Order) -> String {
         format!(
                     "[{timestamp}] Order: {order_id} > {state}: {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
                     timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S"),
-                    order_id = order.ord_id,
+                    order_id = order.id,
                     state = order.state.to_string(),
                     token = order.inst_id,
                     side = order.side.to_string(),
@@ -482,11 +482,10 @@ impl App {
         strategy: &Strategy,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
-            let empty_orders = Vec::new();
             let filled_sell_orders = t
                 .orders
-                .as_ref()
-                .unwrap_or(&empty_orders)
+                .clone()
+                .unwrap_or_default()
                 .iter()
                 .any(|o| o.side == Side::Sell && o.state == OrderState::Filled);
 
@@ -495,12 +494,6 @@ impl App {
                 && t.exit_reason.is_some()
                 && (t.balance.available * t.price) >= 5.0
             {
-                //Update report
-                let usdt_balance = t.balance.available * t.price;
-                let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);
-                let usdt_balance_after_fees = usdt_balance - usdt_fee;
-                let earnings = usdt_balance_after_fees - (t.balance.start * t.buy_price);
-
                 t.balance.available -= calculate_fees(t.balance.available, self.exchange.taker_fee);
                 {
                     let order = t
@@ -514,7 +507,7 @@ impl App {
                         .as_ref()
                         .and_then(|orders| orders.last())
                         .unwrap();
-                    self.save_trade_order(order).await?;
+                    order.save(&self.db_session).await?;
                     let log_line = self.build_order_log(order);
                     self.logs.push(log_line);
                 }
@@ -531,35 +524,17 @@ impl App {
                     self.deny_list.push(t.instid.replace("-USDT", ""))
                 };
 
-                // Update token report
-                t.report.time_left = t.timeout.num_seconds();
+                // Create token report
+                let usdt_balance = t.balance.available * t.price;
+                let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);
+                let usdt_balance_after_fees = usdt_balance - usdt_fee;
+                let earnings = usdt_balance_after_fees - (t.balance.start * t.buy_price);
 
-                let report = Report {
-                    reason: t.exit_reason.clone().unwrap().to_string(),
-                    ts: Utc::now().timestamp_millis().to_string(),
-                    buy_price: t.price,
-                    strategy: strategy.hash.to_string(),
-                    change: t.change,
-                    sell_price: t.price,
-                    earnings,
-                    time_left: t.timeout.num_seconds(),
-                    ..t.report.clone()
-                };
-                t.report = report;
-                //push log
-                self.logs.push(format!(
-                    "[Round report] for {}: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - Exit Balance: {:.2} - ExitReason: {}",
-                    t.instid,
-                    t.timeout.num_seconds(),
-                    t.report.highest,
-                    t.report.lowest,
-                    t.change,
-                    earnings,
-                    usdt_balance_after_fees,
-                    t.exit_reason.clone().unwrap().to_string(),
-                ));
+                let mut report = Report::new(&strategy.hash, &t);
+                report.earnings = earnings;
+                t.report = report.clone();
 
-                self.save_report(&t.report).await?;
+                report.save(&self.db_session).await?;
             }
         }
         Ok(account)

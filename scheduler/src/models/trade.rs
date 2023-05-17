@@ -3,7 +3,8 @@ use serde::Serializer;
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename(serialize = "snake_case", deserialize = "camelCase"))]
 pub struct Order {
-    pub ord_id: String,
+    #[serde(rename(serialize = "ord_id", deserialize = "ordId"))]
+    pub id: String,
     pub inst_id: String,
     pub td_mode: String,
     pub cl_ord_id: String,
@@ -23,9 +24,10 @@ pub struct Order {
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
-pub enum OrderState {
+pub enum State {
     #[default]
     Created,
+    Failed,
     Live,
     PartiallyFilled,
     Cancelled,
@@ -34,7 +36,8 @@ pub enum OrderState {
 impl ToString for OrderState {
     fn to_string(&self) -> String {
         match self {
-            Self::Created => "Live".to_string(),
+            Self::Created => "Created".to_string(),
+            Self::Failed => "Failed".to_string(),
             Self::Live => "Live".to_string(),
             Self::PartiallyFilled => "Partially Filled".to_string(),
             Self::Filled => "Filled".to_string(),
@@ -130,8 +133,8 @@ impl Order {
         let size = (num * 1_000_000.0).floor() / 1_000_000.0;
 
         Self {
+            id: String::new(),
             cl_ord_id: Uuid::new_v4().hyphenated().to_string().replace('-', ""),
-            ord_id: String::new(),
             inst_id: instid.to_string(),
             td_mode: String::from("cash"),
             side,
@@ -148,7 +151,7 @@ impl Order {
 
     pub async fn get_state(&self, auth: &Authentication) -> Result<trade::OrderState> {
         let inst_id = self.inst_id.clone();
-        let query = &format!("?ordId={ord_id}&instId={inst_id}", ord_id = self.ord_id);
+        let query = &format!("?ordId={ord_id}&instId={inst_id}", ord_id = self.id);
         let signed = auth.sign(
             "GET",
             ORDERS_ENDPOINT,
@@ -172,9 +175,6 @@ impl Order {
         Ok(order_state)
     }
 
-    pub fn update_order_state(&mut self, state: OrderState) {
-        self.state = state
-    }
     pub async fn publish(&mut self, trade_enabled: bool, auth: &Authentication) -> Result<()> {
         let json_body = serde_json::to_string(&self)?;
 
@@ -202,7 +202,7 @@ impl Order {
                 match order_response {
                     Ok(res) => {
                         self.response = Some(res.clone());
-                        self.ord_id = res.data[0].ord_id.clone();
+                        self.id = res.data[0].ord_id.clone();
                     }
                     Err(e) => {
                         self.response = None;
@@ -215,6 +215,12 @@ impl Order {
             };
         }
         Ok(())
+    }
+    pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {
+        let payload = serde_json::to_string_pretty(&self).unwrap();
+        let payload = payload.replace("null", "0");
+        let query = format!("INSERT INTO okx.orders JSON '{}'", payload);
+        Ok(db_session.query(&*query, &[]).await?)
     }
 }
 

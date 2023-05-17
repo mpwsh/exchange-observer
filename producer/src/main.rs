@@ -1,4 +1,3 @@
-#![feature(async_closure)]
 use crate::ws::WsStream;
 use anyhow::Result;
 use exchange_observer::{util::Elapsed, AppConfig};

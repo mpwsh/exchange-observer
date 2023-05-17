@@ -10,6 +10,7 @@ const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
 const ORDER_CHECK_DELAY_SECS: i64 = 3;
 const WEBSOCKET_SEND_SECS: i64 = 1;
+const UI_LOG_LINES: usize = 8;
 
 pub const BASE_URL: &str = "https://www.okx.com";
 pub const ORDERS_ENDPOINT: &str = "/api/v5/trade/order";
@@ -20,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //hash and save the strategy to the DB
     cfg.strategy.hash = cfg.strategy.get_hash();
 
-    let mut app = App::init(&cfg).await;
+    let mut app = App::init(&cfg).await?;
 
     //setup account balance and spendable per token
     let mut account = Account::new().set_balance(cfg.account.balance, cfg.account.spendable);
@@ -82,7 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //Portoflio
         app.update_cooldown(&account.portfolio);
 
-        account.portfolio = app.reset_timeouts(account.portfolio, &cfg.strategy);
+        account.portfolio = app.update_timeouts(account.portfolio, &cfg.strategy);
         account.portfolio = app
             .update_candles(cfg.strategy.timeframe, account.portfolio)
             .await?;
@@ -100,22 +101,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //account.portfolio.retain(|t| t.balance.current > 0.0);
 
         //Selling and token removal validation occurs on every loop
-        account = app.tag_invalid_tokens(account, &cfg.strategy)?;
-        account = app.sell_tokens(account, &cfg.strategy).await?;
 
         account.balance.set_current(0.0);
-        account
-            .calculate_balance(&mut app)
-            .calculate_earnings()
-            .clean_portfolio();
+        account.calculate_balance(&mut app).calculate_earnings();
 
+        account = app.tag_invalid_tokens(account, &cfg.strategy)?;
+        account = app.sell_tokens(account, &cfg.strategy).await?;
+        account.clean_portfolio();
         // UI Display
         if cfg.ui.enable {
             if app.cycles.rem_euclid(REFRESH_CYCLES) == 0 {
                 app.term.clear_screen()?;
             }
-            if app.logs.len() > 3 {
-                app.logs.drain(..app.logs.len() - 3);
+            if app.logs.len() > UI_LOG_LINES {
+                app.logs.drain(..app.logs.len() - UI_LOG_LINES);
             };
 
             for line in ui::display(&cfg, &app, &account)?.iter() {
