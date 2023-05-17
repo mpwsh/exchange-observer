@@ -14,6 +14,7 @@ const UI_LOG_LINES: usize = 8;
 
 pub const BASE_URL: &str = "https://www.okx.com";
 pub const ORDERS_ENDPOINT: &str = "/api/v5/trade/order";
+pub const BALANCE_ENDPOINT: &str = "/api/v5/account/balance";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -69,6 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 server.send(data).await;
             }
         };
+
         //Retrieve and process top tokens
         app.fetch_tokens(cfg.strategy.timeframe).await;
         app.tokens = app
@@ -87,6 +89,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         account.portfolio = app
             .update_candles(cfg.strategy.timeframe, account.portfolio)
             .await?;
+        //update reports
+        account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
+
         if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
             //Check and update order states
             account.portfolio = app.update_order_states(account.portfolio).await?;
@@ -94,20 +99,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
         }
 
-        //update reports
-        account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
-
         //keep tokens with balance > 0 usd
         //account.portfolio.retain(|t| t.balance.current > 0.0);
 
         //Selling and token removal validation occurs on every loop
 
         account.balance.set_current(0.0);
-        account.calculate_balance(&mut app).calculate_earnings();
+        account.calculate_balance(&mut app).await.calculate_earnings();
 
         account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;
         account.clean_portfolio();
+
         // UI Display
         if cfg.ui.enable {
             if app.cycles.rem_euclid(REFRESH_CYCLES) == 0 {

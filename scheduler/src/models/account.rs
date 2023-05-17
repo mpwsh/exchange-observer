@@ -47,7 +47,7 @@ impl Account {
         }
     }
 
-    pub fn calculate_balance(&mut self, app: &mut App) -> &mut Self {
+    pub async fn calculate_balance(&mut self, app: &mut App) -> &mut Self {
         let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
 
         for t in self.portfolio.iter_mut() {
@@ -56,8 +56,9 @@ impl Account {
                     if order.state == order.prev_state {
                         continue;
                     }
-                    if order.id.is_empty() && order.state != OrderState::Created {
+                    if order.id.is_empty() && order.state != OrderState::Created && app.exchange.enable_trading {
                         order.state = OrderState::Failed;
+
                     }
                     let (price, size) = match (order.px.parse::<f64>(), order.sz.parse::<f64>()) {
                         (Ok(price), Ok(size)) => (price, size),
@@ -85,6 +86,15 @@ impl Account {
                                 t.balance.available = t.balance.start;
                             }
                         },
+                        OrderState::Failed => match order.side {
+                            Side::Buy => {
+                                app.logs.push("Failed to buy, retry unimplemented yet. Should check USDT Balance and retry".to_string());
+                                //self.balance.available += self.get_balance(&t, &app.exchange.authentication);
+                            }
+                            Side::Sell => {
+                                t.balance.available = Account::get_balance(&t.instid.replace("-USDT",""), &app.exchange.authentication).await.unwrap_or_default();
+                            }
+                        }
                         OrderState::Filled => {
                             self.trades += 1;
                             self.fee_spend += usdt_taker_fee;
@@ -111,7 +121,6 @@ impl Account {
                 }
             }
             self.balance.current += t.balance.current * t.price;
-            t.change = get_percentage_diff(t.price, t.buy_price);
         }
         self.balance.current += self.balance.available;
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
@@ -150,6 +159,29 @@ impl Account {
             self.portfolio.push(t);
         }
         self
+    }
+    pub async fn get_balance(token_id: &str, auth: &Authentication) -> Result<f64> {
+        let query = &format!("?ccy={token_id}", token_id = token_id);
+        let signed = auth.sign(
+            "GET",
+            BALANCE_ENDPOINT,
+            OffsetDateTime::now_utc(),
+            false,
+            query,
+        )?;
+
+        let res = reqwest::Client::new()
+            .get(format!("{BASE_URL}{BALANCE_ENDPOINT}{query}"))
+            .header("OK-ACCESS-KEY", &auth.access_key)
+            .header("OK-ACCESS-PASSPHRASE", &auth.passphrase)
+            .header("OK-ACCESS-TIMESTAMP", signed.timestamp.as_str())
+            .header("OK-ACCESS-SIGN", signed.signature.as_str())
+            .send()
+            .await?
+            .json::<OkxAccountBalanceResponse>()
+            .await?;
+        let balance = &res.data[0].details[0].avail_bal.parse::<f64>().unwrap_or_default();
+        Ok(balance.to_owned())
     }
 }
 

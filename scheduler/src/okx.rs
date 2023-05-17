@@ -2,6 +2,18 @@ use crate::BASE_URL;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+pub type OkxAccountBalanceResponse = OkxApiResponse<OkxAccountBalance>;
+pub type OkxOrderResponse = OkxApiResponse<OkxOrder>;
+pub type OkxTimeResponse = OkxApiResponse<OkxTime>;
+pub type OkxOrderDetailsResponse = OkxApiResponse<OkxOrderDetails>;
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OkxApiResponse<T> {
+    pub code: String,
+    pub data: Vec<T>,
+    pub msg: String,
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OkxOrderDetails {
@@ -47,17 +59,50 @@ pub struct OkxOrderDetails {
     pub u_time: String,
     pub c_time: String,
 }
-pub type OkxOrderResponse = OkxApiResponse<OkxOrder>;
-pub type OkxTimeResponse = OkxApiResponse<OkxTime>;
-pub type OkxOrderDetailsResponse = OkxApiResponse<OkxOrderDetails>;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OkxApiResponse<T> {
-    pub code: String,
-    pub data: Vec<T>,
-    pub msg: String,
+#[serde(rename_all = "camelCase")]
+pub struct OkxAccountBalance {
+    pub adj_eq: String,
+    pub details: Vec<OkxAccountBalanceDetail>,
+    pub imr: String,
+    pub iso_eq: String,
+    pub mgn_ratio: String,
+    pub mmr: String,
+    pub notional_usd: String,
+    pub ord_froz: String,
+    pub total_eq: String,
+    pub u_time: String,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OkxAccountBalanceDetail {
+    pub avail_bal: String,
+    pub avail_eq: String,
+    pub cash_bal: String,
+    pub ccy: String,
+    pub cross_liab: String,
+    pub dis_eq: String,
+    pub eq: String,
+    pub eq_usd: String,
+    pub frozen_bal: String,
+    pub interest: String,
+    pub iso_eq: String,
+    pub iso_liab: String,
+    pub iso_upl: String,
+    pub liab: String,
+    pub max_loan: String,
+    pub mgn_ratio: String,
+    pub notional_lever: String,
+    pub ord_frozen: String,
+    pub twap: String,
+    pub u_time: String,
+    pub upl: String,
+    pub upl_liab: String,
+    pub stgy_eq: String,
+    pub spot_in_use_amt: String,
+}
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OkxOrder {

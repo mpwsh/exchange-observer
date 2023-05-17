@@ -39,9 +39,11 @@ impl Default for Report {
     }
 }
 impl Report {
-    pub fn new(strategy_hash: &str, t: &Token) -> Self {
+    pub fn new(round_id: u64, strategy_hash: &str, t: &Token) -> Self {
         Self {
-            reason: t.exit_reason.clone().unwrap().to_string(),
+            round_id,
+            reason: "None".to_string(),
+            instid: t.instid.clone(),
             ts: Utc::now().timestamp_millis().to_string(),
             buy_price: t.price,
             strategy: strategy_hash.to_string(),
@@ -49,7 +51,7 @@ impl Report {
             sell_price: t.price,
             earnings: 0.0,
             time_left: t.timeout.num_seconds(),
-            ..t.report.clone()
+            .. Default::default()
         }
     }
     pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {

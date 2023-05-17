@@ -248,7 +248,7 @@ impl Token {
     pub fn get_exit_reason(&self, strategy: &Strategy, token_found: bool) -> Option<ExitReason> {
         let sell_floor = strategy.sell_floor.unwrap_or(0.0);
         let timeout_threshold = Duration::seconds(strategy.timeout - 5);
-        let reason = if self.timeout.num_seconds() <= 0 {
+        if self.timeout.num_seconds() <= 0 {
             Some(ExitReason::Timeout)
         } else if self.change <= -strategy.stoploss {
             Some(ExitReason::Stoploss)
@@ -258,8 +258,7 @@ impl Token {
             Some(ExitReason::FloorReached)
         } else {
             None
-        };
-        reason
+        }
     }
     pub async fn configure_from_report(
         &mut self,

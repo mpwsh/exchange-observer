@@ -125,6 +125,7 @@ impl App {
 
     pub fn update_reports(&mut self, mut tokens: Vec<Token>, timeout: i64) -> Vec<Token> {
         for t in tokens.iter_mut() {
+            t.change = get_percentage_diff(t.price, t.buy_price);
             if t.change >= t.report.highest {
                 t.report.highest = t.change;
                 t.report.highest_elapsed = timeout - t.timeout.num_seconds();
@@ -159,7 +160,7 @@ impl App {
                 let got_state = order.get_state(&self.exchange.authentication).await?;
                 if order.state != got_state {
                     order.state = got_state.clone();
-                    token.status = token::Status::from_order(&order);
+                    token.status = token::Status::from_order(order);
                 }
             }
         }
@@ -185,7 +186,7 @@ impl App {
                 };
                 order.id = random_order_id;
                 order.state = random_state;
-                token.status = token::Status::from_order(&order);
+                token.status = token::Status::from_order(order);
             }
         }
     }
@@ -393,28 +394,14 @@ impl App {
                         .as_ref()
                         .and_then(|orders| orders.last())
                         .unwrap();
-                    //self.logs.push(format!("Buy order: {order:?}"));
+
                     order.save(&self.db_session).await?;
                     let log_line = self.build_order_log(order);
                     self.logs.push(log_line);
                     self.round_id += 1;
                 }
 
-                // push report
-                t.report = Report {
-                    instid: t.instid.clone(),
-                    reason: String::new(),
-                    round_id: self.round_id,
-                    ts: Utc::now().timestamp_millis().to_string(),
-                    buy_price: t.price,
-                    strategy: strategy.hash.clone(),
-                    change: t.change,
-                    highest: t.change,
-                    lowest: t.change,
-                    highest_elapsed: strategy.timeout - t.timeout.num_seconds(),
-                    lowest_elapsed: strategy.timeout - t.timeout.num_seconds(),
-                    ..Default::default()
-                };
+                t.report = Report::new(self.round_id, &strategy.hash, t);
             }
         }
         Ok(account)
@@ -430,6 +417,7 @@ impl App {
             t.exit_reason = t.get_exit_reason(strategy, found);
             if t.exit_reason.is_some() && t.status != token::Status::Exited {
                 t.status = token::Status::Selling;
+                t.report.reason = t.exit_reason.as_ref().unwrap().to_string();
             }
         }
         Ok(account)
@@ -530,11 +518,9 @@ impl App {
                 let usdt_balance_after_fees = usdt_balance - usdt_fee;
                 let earnings = usdt_balance_after_fees - (t.balance.start * t.buy_price);
 
-                let mut report = Report::new(&strategy.hash, &t);
-                report.earnings = earnings;
-                t.report = report.clone();
+                t.report.earnings = earnings;
 
-                report.save(&self.db_session).await?;
+                t.report.save(&self.db_session).await?;
             }
         }
         Ok(account)
