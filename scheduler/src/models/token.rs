@@ -207,11 +207,13 @@ impl Token {
         auth: Authentication,
         strategy: &str,
     ) -> Result<&Self> {
+        let ord_type = "ioc";
         let mut order = trade::Order::new(
             &self.instid,
             self.buy_price.to_string(),
             self.balance.start.to_string(),
             Side::Buy,
+            ord_type,
             strategy,
         );
         order.publish(trade_enabled, &auth).await?;
@@ -232,11 +234,24 @@ impl Token {
             x if x > 1_000.0 => (x / 1_000.0).floor() * 1_000.0,
             _ => self.balance.available, // if it's less than 1000, leave it as it is
         };
+        //Count sell atempts and sell to market_price if above x
+        let sell_count = self
+            .orders
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .filter(|o| o.side == Side::Sell)
+            .count();
+        let ord_type = match sell_count {
+            x if x < 5 => "ioc",
+            _ => "market",
+        };
         let mut order = trade::Order::new(
             &self.instid,
             self.price.to_string(),
             sell_balance.to_string(),
             Side::Sell,
+            ord_type,
             strategy,
         );
 
@@ -246,19 +261,54 @@ impl Token {
         Ok(self)
     }
     pub fn get_exit_reason(&self, strategy: &Strategy, token_found: bool) -> Option<ExitReason> {
-        let sell_floor = strategy.sell_floor.unwrap_or(0.0);
+        //thresholds
         let timeout_threshold = Duration::seconds(strategy.timeout - 5);
+        let sell_floor = strategy.sell_floor.unwrap_or(0.0);
+        let volume_threshold = strategy
+            .min_vol
+            .unwrap_or((strategy.timeframe * 1600) as f64)
+            / strategy.timeframe as f64;
+        let low_volume_condition = |c: &&Candlestick| c.vol < volume_threshold;
+        let zero_change_condition = |c: &&Candlestick| c.change == 0.0;
+
+        let low_volume = self
+            .candlesticks
+            .iter()
+            .filter(low_volume_condition)
+            .count();
+        let low_change = self
+            .candlesticks
+            .iter()
+            .filter(zero_change_condition)
+            .count();
+
         if self.timeout.num_seconds() <= 0 {
-            Some(ExitReason::Timeout)
-        } else if self.change <= -strategy.stoploss {
-            Some(ExitReason::Stoploss)
-        } else if self.change >= strategy.cashout && self.timeout < timeout_threshold {
-            Some(ExitReason::Cashout)
-        } else if self.change >= sell_floor && self.timeout < timeout_threshold && !token_found {
-            Some(ExitReason::FloorReached)
-        } else {
-            None
+            return Some(ExitReason::Timeout);
         }
+
+        if self.change <= -strategy.stoploss {
+            return Some(ExitReason::Stoploss);
+        }
+
+        if self.change >= strategy.cashout {
+            return Some(ExitReason::Cashout);
+        }
+
+        if self.change >= sell_floor && self.timeout < timeout_threshold && !token_found {
+            return Some(ExitReason::FloorReached);
+        }
+
+        if low_volume as i64 >= strategy.timeframe / 2 {
+            //Half of the candles in the selected timeframe show volume lower than our spendable
+            //  return Some(ExitReason::LowVolume);
+        }
+
+        if low_change as i64 >= strategy.timeframe / 2 {
+            //Half of the candles in the selected timeframe show 0 change
+            //return Some(ExitReason::LowChange);
+        }
+
+        None
     }
     pub async fn configure_from_report(
         &mut self,

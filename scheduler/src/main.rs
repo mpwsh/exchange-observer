@@ -89,6 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         account.portfolio = app
             .update_candles(cfg.strategy.timeframe, account.portfolio)
             .await?;
+
         //update reports
         account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
 
@@ -105,7 +106,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //Selling and token removal validation occurs on every loop
 
         account.balance.set_current(0.0);
-        account.calculate_balance(&mut app).await.calculate_earnings();
+        account
+            .calculate_balance(&mut app)
+            .await
+            .calculate_earnings();
 
         account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;

@@ -8,7 +8,7 @@ pub use crate::{
     },
     okx::*,
     utils::*,
-    BASE_URL, ORDERS_ENDPOINT, BALANCE_ENDPOINT
+    BALANCE_ENDPOINT, BASE_URL, ORDERS_ENDPOINT,
 };
 pub use anyhow::Result;
 pub use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Timelike, Utc};

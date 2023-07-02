@@ -56,9 +56,11 @@ impl Account {
                     if order.state == order.prev_state {
                         continue;
                     }
-                    if order.id.is_empty() && order.state != OrderState::Created && app.exchange.enable_trading {
+                    if order.id.is_empty()
+                        && order.state != OrderState::Created
+                        && app.exchange.enable_trading
+                    {
                         order.state = OrderState::Failed;
-
                     }
                     let (price, size) = match (order.px.parse::<f64>(), order.sz.parse::<f64>()) {
                         (Ok(price), Ok(size)) => (price, size),
@@ -92,9 +94,16 @@ impl Account {
                                 //self.balance.available += self.get_balance(&t, &app.exchange.authentication);
                             }
                             Side::Sell => {
-                                t.balance.available = Account::get_balance(&t.instid.replace("-USDT",""), &app.exchange.authentication).await.unwrap_or_default();
+                                if app.exchange.enable_trading {
+                                    t.balance.available = Account::get_balance(
+                                        &t.instid.replace("-USDT", ""),
+                                        &app.exchange.authentication,
+                                    )
+                                    .await
+                                    .unwrap_or_default();
+                                }
                             }
-                        }
+                        },
                         OrderState::Filled => {
                             self.trades += 1;
                             self.fee_spend += usdt_taker_fee;
@@ -141,8 +150,8 @@ impl Account {
         self.portfolio.retain(|t| {
             let exited = t.status == token::Status::Exited;
             let waiting = t.status == token::Status::Waiting;
-            //let remaining_balance = (t.balance.available*t.price) > 5.0;
-            !(exited || waiting) // && !remaining_balance
+            //let no_remaining_balance = (t.balance.available*t.price) < 2.0;
+            !(exited || waiting) //&& no_remaining_balance
         });
 
         self
@@ -180,7 +189,10 @@ impl Account {
             .await?
             .json::<OkxAccountBalanceResponse>()
             .await?;
-        let balance = &res.data[0].details[0].avail_bal.parse::<f64>().unwrap_or_default();
+        let balance = &res.data[0].details[0]
+            .avail_bal
+            .parse::<f64>()
+            .unwrap_or_default();
         Ok(balance.to_owned())
     }
 }

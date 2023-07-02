@@ -56,9 +56,7 @@ impl App {
             .compression(Some(Compression::Snappy))
             .build()
             .await?;
-        session
-            .use_keyspace(&cfg.database.keyspace, false)
-            .await?;
+        session.use_keyspace(&cfg.database.keyspace, false).await?;
         let session = Arc::new(session);
         // Create a Tokio channel with a sender and receiver
         let (tx, rx) = mpsc::channel(100);
@@ -414,7 +412,9 @@ impl App {
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
             let found = self.tokens.iter().any(|s| t.instid == s.instid);
-            t.exit_reason = t.get_exit_reason(strategy, found);
+            if t.status == token::Status::Trading {
+                t.exit_reason = t.get_exit_reason(strategy, found);
+            }
             if t.exit_reason.is_some() && t.status != token::Status::Exited {
                 t.status = token::Status::Selling;
                 t.report.reason = t.exit_reason.as_ref().unwrap().to_string();
@@ -476,11 +476,17 @@ impl App {
                 .unwrap_or_default()
                 .iter()
                 .any(|o| o.side == Side::Sell && o.state == OrderState::Filled);
+            let failed_sell_orders = t
+                .orders
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .any(|o| o.side == Side::Sell && o.state == OrderState::Failed);
 
             if t.status == token::Status::Selling
-                && !filled_sell_orders
+                && (!filled_sell_orders || failed_sell_orders)
                 && t.exit_reason.is_some()
-                && (t.balance.available * t.price) >= 5.0
+                && (t.balance.available * t.price) >= 2.0
             {
                 t.balance.available -= calculate_fees(t.balance.available, self.exchange.taker_fee);
                 {

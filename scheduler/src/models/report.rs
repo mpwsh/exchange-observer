@@ -51,7 +51,7 @@ impl Report {
             sell_price: t.price,
             earnings: 0.0,
             time_left: t.timeout.num_seconds(),
-            .. Default::default()
+            ..Default::default()
         }
     }
     pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {

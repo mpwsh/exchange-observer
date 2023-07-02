@@ -124,13 +124,16 @@ impl FromStr for ExitReason {
 }
 
 impl Order {
-    pub fn new(instid: &str, price: String, size: String, side: Side, strategy: &str) -> Self {
-        let ord_type = match side {
-            Side::Buy => "ioc",
-            Side::Sell => "ioc",
-        };
-        let num = size.parse::<f64>().unwrap();
-        let size = (num * 1_000_000.0).floor() / 1_000_000.0;
+    pub fn new(
+        instid: &str,
+        price: String,
+        size: String,
+        side: Side,
+        ord_type: &str,
+        strategy: &str,
+    ) -> Self {
+        //let num = size.parse::<f64>().unwrap();
+        //let size = (num * 1_000_000.0).floor() / 1_000_000.0;
 
         Self {
             id: String::new(),
@@ -140,7 +143,7 @@ impl Order {
             side,
             ord_type: ord_type.to_string(),
             px: price,
-            sz: size.to_string(),
+            sz: size,
             strategy: strategy.to_string(),
             response: None,
             prev_state: OrderState::Created,
