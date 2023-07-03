@@ -46,7 +46,7 @@ async fn run(client: &Client, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
         while rx.changed().await.is_ok() {
             info!("Sending keep-alive ping");
             ws.write
-                .send(Message::Text(String::from("ping")))
+                .send(Message::Ping(Vec::new()))
                 .await
                 .expect("Failed to send message");
         }
