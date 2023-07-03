@@ -25,7 +25,7 @@ top=8
 portfolio_size=5
 #Block following tokens
 
-#deny_list=["LUNC", "UST", "BTC", "ETH", "MAGIC", "VALUE", "AIDOGE", "APIX", "SWRV", "MDA", "BORING", "TRUE", "XPR", "TOWN", "FODL", "WSB", "TAMA", "SKEB", "CTC", "DEVT","BNT"]  
+#deny_list=["LUNC", "UST", "BTC", "ETH", "MAGIC", "VALUE", "AIDOGE", "APIX", "SWRV", "MDA", "BORING", "TRUE", "XPR", "TOWN", "FODL", "WSB", "TAMA", "SKEB", "CTC", "DEVT","BNT"]
 
 #retrieve last(x) minutes of candlesticks to analyze the performance of tokens
 timeframe=5
@@ -67,7 +67,7 @@ token=""
 key=""
 
 [server]
-#websocket server (not implemented yet)
+#websocket server
 enable=false
 listen_address="0.0.0.0"
 #Possible values -- debug, info, warn, error
@@ -95,7 +95,7 @@ port=9092
 name = "candle1m"
 partitions = 5
 #Offset per topic to start retrieving messages
-offset = 0 
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -105,7 +105,7 @@ max_wait_ms=500
 name = "tickers"
 partitions = 20
 #Offset per topic to start retrieving messages
-offset = 0 
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000
@@ -115,7 +115,7 @@ max_wait_ms=500
 name = "trades"
 partitions = 10
 #Offset per topic to start retrieving messages
-offset = 0 
+offset = 0
 replication_factor=1
 min_batch_size=1
 max_batch_size=100000

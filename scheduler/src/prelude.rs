@@ -11,7 +11,7 @@ pub use crate::{
     BALANCE_ENDPOINT, BASE_URL, ORDERS_ENDPOINT,
 };
 pub use anyhow::Result;
-pub use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, Timelike, Utc};
+pub use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, TimeZone, Timelike, Utc};
 pub use exchange_observer::AppConfig;
 pub use exchange_observer::{Authentication, Exchange, OffsetDateTime, Pushover, Strategy};
 pub use scylla::{

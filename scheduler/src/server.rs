@@ -71,10 +71,10 @@ impl WebSocket {
         WebSocket { peers }
     }
 
-    pub async fn send(&self, msg: Message) {
+    pub async fn send(&self, msg: String) {
         for peer in self.peers.lock().await.iter_mut() {
-            if let Err(e) = peer.send(msg.clone()).await {
-                error!("Error sending message: {}", e);
+            if let Err(e) = peer.send(Message::text(msg.clone())).await {
+                //error!("Error sending message: {}", e);
             }
         }
     }

@@ -1,4 +1,5 @@
 pub use prelude::*;
+use serde_json::json;
 mod app;
 mod models;
 mod okx;
@@ -9,7 +10,7 @@ mod utils;
 const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
 const ORDER_CHECK_DELAY_SECS: i64 = 3;
-const WEBSOCKET_SEND_SECS: i64 = 1;
+const WEBSOCKET_SEND_SECS: i64 = 3;
 const UI_LOG_LINES: usize = 8;
 
 pub const BASE_URL: &str = "https://www.okx.com";
@@ -38,36 +39,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.set_cooldown(1);
     };
     let server = if cfg.server.clone().unwrap_or_default().enable {
-        // Start the WebSocket server in a new thread
-        // Insert the write part of this peer to the peer map.
-        Some(server::WebSocket::run("127.0.0.1:9002").await)
+        Some(server::WebSocket::run("0.0.0.0:9002").await)
     } else {
         None
     };
+    let mut prev_balance = 0.0;
+
     loop {
         if cfg.ui.enable {
             app.term.move_cursor_to(0, 0)?;
         }
+
         app.time.utc = Utc::now();
         let unix_timestamp = app.time.utc.timestamp();
         app.time.now = time::Instant::now();
         if let Some(server) = &server {
-            /*
             if !account.portfolio.is_empty() {
-                let data =
-                    server::Message::text(serde_json::to_string(&account.portfolio).unwrap());
-                server.send(data).await;
+                let data = serde_json::to_string(&account.portfolio).unwrap();
+                server
+                    .send(
+                        json!({
+                        "channel": "portfolio",
+                        "data": data
+                        })
+                        .to_string(),
+                    )
+                    .await;
             }
             if !app.tokens.is_empty() {
-                let data = server::Message::text(serde_json::to_string(&app.tokens).unwrap());
-                server.send(data).await;
+                let data = serde_json::to_string(&app.tokens).unwrap();
+                server
+                    .send(
+                        json!({
+                        "channel": "tokens",
+                        "data": data
+                        })
+                        .to_string(),
+                    )
+                    .await;
             }
-            let data = server::Message::text(serde_json::to_string(&account.balance).unwrap());
-            server.send(data).await;
-            */
             if unix_timestamp.rem_euclid(WEBSOCKET_SEND_SECS) == 0 {
-                let data = server::Message::text(serde_json::to_string(&account).unwrap());
-                server.send(data).await;
+                if prev_balance != account.balance.current {
+                    let data = serde_json::to_string(&account.balance).unwrap();
+                    server
+                        .send(
+                            json!({
+                            "channel": "balance",
+                            "data": data
+                            })
+                            .to_string(),
+                        )
+                        .await;
+
+                    prev_balance = account.balance.current;
+                }
             }
         };
 

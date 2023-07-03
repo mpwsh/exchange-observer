@@ -215,7 +215,7 @@ impl App {
                 if token
                     .candlesticks
                     .last()
-                    .unwrap_or(&Candlestick::new())
+                    .unwrap_or(&Candlestick::new(token.price))
                     .change
                     > strategy.min_change
                 {
@@ -254,19 +254,18 @@ impl App {
         timeframe: i64,
         tokens: Vec<Token>,
     ) -> Result<Vec<Token>, Box<dyn Error>> {
-        let dt = (self
+        let dt = self
             .time
             .utc
             .with_second(0)
             .unwrap()
             .with_nanosecond(0)
-            .unwrap()
-            - Duration::minutes(1))
-            - (Duration::minutes(timeframe - 1));
+            .unwrap();
+
         //last -timeframe- candles
         let get_candles_query = self
             .db_session
-            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts >= ?")
+            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts <= ? LIMIT ?")
             .await?;
 
         //Last min tickers
@@ -283,12 +282,15 @@ impl App {
             async move {
                 if let Some(rows) = self
                     .db_session
-                    .execute(&get_candle_stmt, (&token.instid, dt.timestamp_millis()))
+                    .execute(
+                        &get_candle_stmt,
+                        (&token.instid, dt.timestamp_millis(), timeframe as i32),
+                    )
                     .await?
                     .rows
                 {
                     for row in rows.into_typed::<Candlestick>() {
-                        let candle = row.unwrap_or(Candlestick::new());
+                        let candle = row.unwrap_or(Candlestick::new(token.price));
                         token.add_or_update_candle(candle)
                     }
                 };
@@ -324,8 +326,14 @@ impl App {
                         a.ts.partial_cmp(&b.ts)
                             .expect("unable to compare timestamps")
                     });
-                    let last_candle =
+                    let mut last_candle =
                         Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
+                    if last_candle.change == 0.0 {
+                        last_candle.open = token.price;
+                        last_candle.high = token.price;
+                        last_candle.low = token.price;
+                        last_candle.close = token.price;
+                    }
                     token.add_or_update_candle(last_candle);
                 };
 

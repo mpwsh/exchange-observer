@@ -75,19 +75,26 @@ pub struct Candlestick {
 
 impl Default for Candlestick {
     fn default() -> Self {
-        Candlestick::new()
+        Candlestick::new(0.0)
     }
 }
 impl Candlestick {
-    pub fn new() -> Self {
+    pub fn new(open: f64) -> Self {
         Self {
             instid: String::new(),
-            ts: Duration::seconds(0),
+            ts: Duration::milliseconds(
+                Utc::now()
+                    .with_second(0)
+                    .unwrap()
+                    .with_nanosecond(0)
+                    .unwrap()
+                    .timestamp_millis(),
+            ),
             change: 0.0,
-            close: 0.0,
-            high: 0.0,
-            low: 0.0,
-            open: 0.0,
+            close: open,
+            high: open,
+            low: open,
+            open,
             range: 0.0,
             vol: 0.0,
         }
@@ -114,12 +121,16 @@ impl Candlestick {
         let ts = tickers.last()?.2;
         let datetime =
             DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + ts;
+        let time = if datetime.timestamp_millis() == 0 {
+            Utc::now()
+        } else {
+            datetime
+        };
 
         Some(Candlestick {
             instid: instid.to_string(),
             ts: Duration::milliseconds(
-                datetime
-                    .with_second(0)
+                time.with_second(0)
                     .unwrap()
                     .with_nanosecond(0)
                     .unwrap()
@@ -367,6 +378,7 @@ impl Token {
         };
         self
     }
+
     pub fn is_valid(&self, deny_list: &[String], strategy: &Strategy, spendable: f64) -> bool {
         let denied = deny_list
             .iter()
@@ -377,7 +389,7 @@ impl Token {
             .filter(|x| x.vol > spendable)
             .count();
         let non_zero_candles = self.candlesticks.iter().filter(|x| x.vol > 0.00).count();
-        let blank_candle = Candlestick::new();
+        let blank_candle = Candlestick::new(self.price);
         let last_candle = self.candlesticks.last().unwrap_or(&blank_candle);
 
         !denied

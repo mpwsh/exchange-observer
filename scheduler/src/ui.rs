@@ -43,7 +43,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Fraktur),
             );
             //Last candle
-            let blank = Candlestick::new();
+            let blank = Candlestick::new(t.price);
             let last = t.candlesticks.last().unwrap_or(&blank);
             if last.change < 0.00 {
                 token_row.push(
@@ -204,7 +204,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Fraktur),
             );
             //Last candle
-            let blank = Candlestick::new();
+            let blank = Candlestick::new(t.price);
             let last = t.candlesticks.last().unwrap_or(&blank);
             if last.change < 0.00 {
                 token_row.push(
