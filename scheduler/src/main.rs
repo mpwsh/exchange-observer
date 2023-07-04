@@ -1,5 +1,4 @@
 pub use prelude::*;
-use serde_json::json;
 mod app;
 mod models;
 mod okx;
@@ -7,10 +6,10 @@ pub mod prelude;
 mod server;
 mod ui;
 mod utils;
+mod ws;
 const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
 const ORDER_CHECK_DELAY_SECS: i64 = 3;
-const WEBSOCKET_SEND_SECS: i64 = 3;
 const UI_LOG_LINES: usize = 8;
 
 pub const BASE_URL: &str = "https://www.okx.com";
@@ -43,57 +42,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let mut prev_balance = 0.0;
+
+    // Websocket message channel
+    let (sender, receiver) = tokio::sync::mpsc::channel(100);
+    if let Some(server) = server {
+        tokio::spawn(async {
+            ws::transmit(server, receiver).await.unwrap();
+        });
+    }
 
     loop {
         if cfg.ui.enable {
             app.term.move_cursor_to(0, 0)?;
         }
-
         app.time.utc = Utc::now();
         let unix_timestamp = app.time.utc.timestamp();
         app.time.now = time::Instant::now();
-        if let Some(server) = &server {
-            if !account.portfolio.is_empty() {
-                let data = serde_json::to_string(&account.portfolio).unwrap();
-                server
-                    .send(
-                        json!({
-                        "channel": "portfolio",
-                        "data": data
-                        })
-                        .to_string(),
-                    )
-                    .await;
-            }
-            if !app.tokens.is_empty() {
-                let data = serde_json::to_string(&app.tokens).unwrap();
-                server
-                    .send(
-                        json!({
-                        "channel": "tokens",
-                        "data": data
-                        })
-                        .to_string(),
-                    )
-                    .await;
-            }
-            if unix_timestamp.rem_euclid(WEBSOCKET_SEND_SECS) == 0 {
-                if prev_balance != account.balance.current {
-                    let data = serde_json::to_string(&account.balance).unwrap();
-                    server
-                        .send(
-                            json!({
-                            "channel": "balance",
-                            "data": data
-                            })
-                            .to_string(),
-                        )
-                        .await;
 
-                    prev_balance = account.balance.current;
-                }
-            }
+        // Prepare the data to send
+        let ws_data = ws::WsData {
+            account: account.clone(),
+            tokens: app.tokens.clone(),
+            ts: app.time.utc,
+        };
+
+        // Send the data
+        if let Err(_) = sender.send(ws_data).await {
+            app.logs
+                .push("Error sending data to transmit function".to_string());
         };
 
         //Retrieve and process top tokens
@@ -118,12 +94,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //update reports
         account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
 
-        if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
-            //Check and update order states
-            account.portfolio = app.update_order_states(account.portfolio).await?;
-            //TODO: Cancel live orders if above order_ttl
-            //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
-        }
+        //if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
+        //Check and update order states
+        account.portfolio = app.update_order_states(account.portfolio).await?;
+        //TODO: Cancel live orders if above order_ttl
+        //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
+        // }
 
         //keep tokens with balance > 0 usd
         //account.portfolio.retain(|t| t.balance.current > 0.0);

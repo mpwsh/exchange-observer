@@ -1,0 +1,5 @@
+mod app;
+pub use app::Console;
+
+#[cfg(target_arch = "wasm32")]
+mod web;

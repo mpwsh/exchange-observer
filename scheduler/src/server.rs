@@ -74,7 +74,10 @@ impl WebSocket {
     pub async fn send(&self, msg: String) {
         for peer in self.peers.lock().await.iter_mut() {
             if let Err(e) = peer.send(Message::text(msg.clone())).await {
-                //error!("Error sending message: {}", e);
+                match e {
+                    Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
+                    _ => error!("Error sending message: {}", e),
+                }
             }
         }
     }
