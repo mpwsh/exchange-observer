@@ -1,0 +1,108 @@
+on: [push, pull_request]
+
+name: CI
+
+env:
+  # This is required to enable the web_sys clipboard API which egui_web uses
+  # https://rustwasm.github.io/wasm-bindgen/api/web_sys/struct.Clipboard.html
+  # https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
+  RUSTFLAGS: --cfg=web_sys_unstable_apis
+
+jobs:
+  check:
+    name: Rust format, cranky, check, test, doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.65.0
+          override: true
+          components: rustfmt, clippy
+
+      - run: |
+          sudo apt-get update
+          sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+
+      - name: Set up cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-cranky
+        uses: baptiste0928/cargo-install@v1
+        with:
+          crate: cargo-cranky
+
+      - name: Rustfmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Cranky
+        uses: actions-rs/cargo@v1
+        with:
+          command: cranky
+          args: --all-targets --all-features --  -D warnings
+
+      - name: Check
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --all-features
+
+      - name: Test doc-tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --doc --all-features
+
+      - name: cargo doc
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --no-deps --all-features
+
+      - name: cargo doc --document-private-items
+        uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --document-private-items --no-deps --all-features
+
+      - name: Test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features --lib
+
+  check_wasm:
+    name: Check wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.65.0
+          target: wasm32-unknown-unknown
+          override: true
+
+      - name: Set up cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check wasm32
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --all-features --lib --target wasm32-unknown-unknown
+
+  cargo-deny:
+    name: Check Rust dependencies (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          rust-version: "1.65.0"
+          log-level: error
