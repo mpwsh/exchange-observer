@@ -63,19 +63,22 @@ impl Report {
 }
 impl ToString for Report {
     fn to_string(&self) -> String {
-        //let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + self.ts;
-        //timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+        let timestamp = match DateTime::parse_from_str(&self.ts, "%Y-%m-%d %H:%M:%S") {
+            Ok(t) => t.with_timezone(&Utc),
+            Err(_) => Utc::now(),
+        };
+
         format!(
-                    "[{}] - Round({}) - {} Report: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - ExitReason: {}",
-                    self.ts,
-                    self.round_id,
-                    self.instid,
-                    self.time_left,
-                    self.highest,
-                    self.lowest,
-                    self.change,
-                    self.earnings,
-                    self.reason
-                )
+            "[{}] - Round({}) - {} Report: Time left: {} - Change: [Highest: %{}, Lowest: %{}, Exit: %{}] - Earnings: {:.2} - ExitReason: {}",
+            timestamp,
+            self.round_id,
+            self.instid,
+            self.time_left,
+            self.highest,
+            self.lowest,
+            self.change,
+            self.earnings,
+            self.reason
+        )
     }
 }

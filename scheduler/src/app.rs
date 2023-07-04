@@ -8,7 +8,6 @@ use rand::thread_rng;
 use rand::Rng;
 use std::sync::Arc;
 use time::Instant;
-use tokio::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Debug)]
 pub struct App {
@@ -19,8 +18,6 @@ pub struct App {
     pub cooldown: Duration,
     pub round_id: u64,
     pub term: Term,
-    pub tx: Sender<Message>,
-    pub rx: Receiver<Message>,
     pub pushover: Pushover,
     pub exchange: Exchange,
     pub deny_list: Vec<String>,
@@ -38,10 +35,8 @@ pub struct Time {
 impl Default for Time {
     fn default() -> Self {
         Self {
-            //Double check the time coming from the websocket connection or override with your own
-            //ts.
-            started: Utc::now(), // - Duration::minutes(1) - Duration::seconds(30),
-            utc: Utc::now(),     // - Duration::minutes(1) - Duration::seconds(30),
+            started: Utc::now(),
+            utc: Utc::now(),
             now: Instant::now(),
             elapsed: Duration::milliseconds(0),
             uptime: Duration::seconds(0),
@@ -58,8 +53,6 @@ impl App {
             .await?;
         session.use_keyspace(&cfg.database.keyspace, false).await?;
         let session = Arc::new(session);
-        // Create a Tokio channel with a sender and receiver
-        let (tx, rx) = mpsc::channel(100);
 
         Ok(App {
             round_id: 0,
@@ -68,8 +61,6 @@ impl App {
             time: Time::default(),
             logs: Vec::new(),
             tokens: Vec::new(),
-            tx,
-            rx,
             deny_list: cfg.strategy.deny_list.clone().unwrap_or_default(),
             exchange: cfg.exchange.clone().unwrap_or_default(),
             term: Term::stdout(),
@@ -173,6 +164,7 @@ impl App {
                 .filter(|o| o.state == OrderState::Live && o.prev_state != OrderState::Created)
             {
                 let random_state = if rng.gen_bool(1.0 / 3.0) {
+                    log::warn!("{} - Faking order cancellation", token.instid);
                     OrderState::Cancelled
                 } else {
                     OrderState::Filled
@@ -184,6 +176,10 @@ impl App {
                 };
                 order.id = random_order_id;
                 order.state = random_state;
+                /*
+                order.id = order.cl_ord_id.clone();
+                order.state = OrderState::Filled;
+                */
                 token.status = token::Status::from_order(order);
             }
         }
@@ -429,27 +425,6 @@ impl App {
             }
         }
         Ok(account)
-    }
-    pub fn build_report_log(&self, order: &Order) -> String {
-        format!(
-                    "[{timestamp}] Order: {order_id} > {state}: {side} {token} - order type {ord_type} - price: {price} - size: {size} | Response: {response}",
-                    timestamp = self.time.utc.format("%Y-%m-%d %H:%M:%S"),
-                    order_id = order.id,
-                    state = order.state.to_string(),
-                    token = order.inst_id,
-                    side = order.side.to_string(),
-                    ord_type = order.ord_type,
-                    price = order.px,
-                    size = order.sz,
-                    response = if self.exchange.enable_trading {
-                        match order.clone().response {
-                            Some(r) => r.data[0].clone().s_msg,
-                            None => format!("{:?}", order.response)
-                        }
-                    } else {
-                        String::from("N/A")
-                    }
-                )
     }
     pub fn build_order_log(&self, order: &Order) -> String {
         format!(

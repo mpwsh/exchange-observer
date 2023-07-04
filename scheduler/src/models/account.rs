@@ -49,7 +49,8 @@ impl Account {
 
     pub async fn calculate_balance(&mut self, app: &mut App) -> &mut Self {
         let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
-
+        let mut open_order_value = 0.0;
+        let mut token_balances = 0.0;
         for t in self.portfolio.iter_mut() {
             if let Some(orders) = t.orders.as_mut() {
                 for order in orders.iter_mut() {
@@ -65,19 +66,26 @@ impl Account {
                     let (price, size) = match (order.px.parse::<f64>(), order.sz.parse::<f64>()) {
                         (Ok(price), Ok(size)) => (price, size),
                         _ => {
-                            log::error!("Failed to parse price or size as f64");
+                            app.logs.push(format!(
+                                "Failed to parse price or size for token {}",
+                                t.instid
+                            ));
                             continue;
                         }
                     };
+                    let order_amount = (size * price) + usdt_taker_fee;
                     match order.state {
                         OrderState::Live => match order.side {
                             Side::Buy => {
-                                let order_amount = (size * price) + usdt_taker_fee;
                                 self.balance.available -= order_amount;
-                                self.balance.current += order_amount;
+                                open_order_value += order_amount;
+                                // Add the value of the open order
+                                //app.logs.push(order_amount.to_string());
+                                //self.balance.current += order_amount;
                             }
                             Side::Sell => {
                                 t.balance.available -= size;
+                                open_order_value += order_amount;
                             }
                         },
                         OrderState::Cancelled => match order.side {
@@ -129,9 +137,16 @@ impl Account {
                     order.prev_state = order.state.clone();
                 }
             }
-            self.balance.current += t.balance.current * t.price;
+            token_balances += t.balance.current * t.price;
         }
-        self.balance.current += self.balance.available;
+        //self.balance.current += self.balance.available;
+        self.balance.current = self.balance.available + open_order_value + token_balances;
+        /*
+        app.logs.push(format!(
+            "Balance: {} | Available: {} | open_orders_value: {} | From Tokens: {} ",
+            self.balance.current, self.balance.available, open_order_value, token_balances
+        ));*/
+
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
         self
     }
@@ -156,6 +171,7 @@ impl Account {
 
         self
     }
+
     pub fn add_token(&mut self, token: &Token, strategy: &Strategy) -> &Self {
         if self.balance.available >= self.balance.spendable
             && self.portfolio.len() < strategy.portfolio_size as usize
@@ -169,6 +185,7 @@ impl Account {
         }
         self
     }
+
     pub async fn get_balance(token_id: &str, auth: &Authentication) -> Result<f64> {
         let query = &format!("?ccy={token_id}", token_id = token_id);
         let signed = auth.sign(
