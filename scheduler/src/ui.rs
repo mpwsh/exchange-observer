@@ -298,17 +298,16 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             //Earnings
 
             if t.balance.available > 0.0 {
-                let earnings = (t.balance.current * t.price) - (t.buy_price * t.balance.start);
-                if earnings < 0.0 {
+                if t.earnings < 0.0 {
                     token_row.push(
-                        Cell::new(format!("$ {:.2}", earnings))
+                        Cell::new(format!("$ {:.2}", t.earnings))
                             .set_alignment(CellAlignment::Center)
                             .add_attribute(Attribute::Bold)
                             .fg(Color::Red),
                     );
-                } else if earnings > 0.0 {
+                } else if t.earnings > 0.0 {
                     token_row.push(
-                        Cell::new(format!("$ {:.2}", earnings))
+                        Cell::new(format!("$ {:.2}", t.earnings))
                             .set_alignment(CellAlignment::Center)
                             .add_attribute(Attribute::Bold)
                             .fg(Color::Green),

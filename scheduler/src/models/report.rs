@@ -54,6 +54,7 @@ impl Report {
             ..Default::default()
         }
     }
+
     pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {
         let payload = serde_json::to_string_pretty(&self).unwrap();
         let payload = payload.replace("null", "0");

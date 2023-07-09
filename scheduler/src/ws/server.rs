@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-pub use tokio_tungstenite::{
+use tokio_tungstenite::{
     accept_async,
     tungstenite::{Error, Message, Result},
     WebSocketStream,
@@ -76,6 +76,9 @@ impl WebSocket {
             if let Err(e) = peer.send(Message::text(msg.clone())).await {
                 match e {
                     Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
+                    Error::Io(ref err)
+                        if err.kind() == std::io::ErrorKind::ConnectionReset
+                            || err.kind() == std::io::ErrorKind::BrokenPipe => {}
                     _ => error!("Error sending message: {}", e),
                 }
             }

@@ -1,23 +1,38 @@
+use super::Duration;
 use crate::app::{Account, Candlestick};
-use eframe::egui::{plot, Color32, Stroke};
+use eframe::egui::{
+    plot::{BoxElem, BoxSpread},
+    Color32, Stroke,
+};
 
 pub struct CandlestickBoxPlot {
-    pub boxes: Vec<plot::BoxElem>,
+    pub boxes: Vec<BoxElem>,
 }
 
 impl CandlestickBoxPlot {
-    pub fn new(candlesticks: &[Candlestick]) -> Self {
+    pub fn new(candlesticks: &[Candlestick], buy_ts: Duration, buy_price: f64) -> Self {
+        // buy ts // buy price candlestick
+        let buy_candle = Candlestick {
+            instid: candlesticks.last().unwrap().instid.clone(),
+            open: buy_price,
+            high: buy_price,
+            low: buy_price,
+            close: buy_price,
+            change: 0.0,
+            range: 0.0,
+            vol: 123.0,
+            ts: buy_ts,
+        };
+
         // Sort candlesticks by timestamp
         let mut sorted_candlesticks = candlesticks.to_vec();
+        sorted_candlesticks.push(buy_candle);
         sorted_candlesticks.sort_by(|a, b| a.ts.cmp(&b.ts));
 
-        // Convert sorted candlesticks to box plot data
-
-        let boxes: Vec<plot::BoxElem> = sorted_candlesticks
+        let boxes: Vec<BoxElem> = sorted_candlesticks
             .iter()
-            .enumerate()
-            .map(|(i, candlestick)| {
-                let ts_secs = candlestick.ts.num_seconds() as f64;
+            .map(|candlestick| {
+                let ts_secs = candlestick.ts.num_seconds();
                 let open = candlestick.open;
                 let close = candlestick.close;
                 let lower_quartile = if open < close { open } else { close };
@@ -29,10 +44,24 @@ impl CandlestickBoxPlot {
                 } else {
                     Color32::DARK_RED // Negative change, use red color
                 };
+                let (legend, color) = if candlestick.vol == 123.0 {
+                    (
+                        format!("Time: {}\nBuy price: {}", buy_ts.num_seconds(), buy_price),
+                        Color32::YELLOW,
+                    )
+                } else {
+                    (
+                        format!(
+                            "Time: {}\nVol: {}\nChange: {}\nOpen: {}\nClose: {}",
+                            ts_secs, candlestick.vol, candlestick.change, open, close
+                        ),
+                        color,
+                    )
+                };
 
-                plot::BoxElem::new(
-                    (i as f64) / 3.5,
-                    plot::BoxSpread::new(
+                BoxElem::new(
+                    ts_secs as f64,
+                    BoxSpread::new(
                         candlestick.low,
                         lower_quartile,
                         median,
@@ -40,15 +69,13 @@ impl CandlestickBoxPlot {
                         candlestick.high,
                     ),
                 )
-                .name(format!(
-                    "Time: {:.2}\nVol: {}\nChange: {}\nOpen: {}\nClose: {}",
-                    ts_secs, candlestick.vol, candlestick.change, open, close
-                ))
+                .name(legend)
                 .fill(color)
-                .stroke(Stroke::new(1.0, color)) // Set color based on change
+                .box_width(30.0)
+                .whisker_width(0.1)
+                .stroke(Stroke::new(1.0, color))
             })
             .collect();
-
         Self { boxes }
     }
 }
@@ -65,6 +92,18 @@ impl BalanceChart {
             .map(|(account, &ts)| [ts as f64, account.balance.current])
             .collect();
 
+        let token_balance_line: Vec<[f64; 2]> = account_history
+            .iter()
+            .zip(timestamps.iter())
+            .map(|(account, &ts)| [ts as f64, account.token_balance])
+            .collect();
+
+        let open_orders_balance_line: Vec<[f64; 2]> = account_history
+            .iter()
+            .zip(timestamps.iter())
+            .map(|(account, &ts)| [ts as f64, account.open_orders])
+            .collect();
+
         let available_balance_line: Vec<[f64; 2]> = account_history
             .iter()
             .zip(timestamps.iter())
@@ -72,7 +111,12 @@ impl BalanceChart {
             .collect();
 
         Self {
-            lines_values: vec![current_balance_line, available_balance_line],
+            lines_values: vec![
+                current_balance_line,
+                token_balance_line,
+                open_orders_balance_line,
+                available_balance_line,
+            ],
         }
     }
 }
@@ -107,8 +151,14 @@ impl EarningsChart {
             .map(|(account, &ts)| [ts as f64, account.earnings])
             .collect();
 
+        let fees_line: Vec<[f64; 2]> = account_history
+            .iter()
+            .zip(timestamps.iter())
+            .map(|(account, &ts)| [ts as f64, account.fee_spend])
+            .collect();
+
         Self {
-            lines_values: vec![earnings_line],
+            lines_values: vec![earnings_line, fees_line],
         }
     }
 }

@@ -3,8 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use eframe::egui::{
     menu,
     plot::{self, Corner, Legend, Line, Plot},
-    CentralPanel, CollapsingHeader, Color32, Context, Frame, Key, ScrollArea, TextStyle,
-    TopBottomPanel,
+    Align, CentralPanel, CollapsingHeader, Color32, Context, Frame, Key, Layout, RichText,
+    ScrollArea, TextEdit, TextStyle, TopBottomPanel,
 };
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use serde::Deserialize;
@@ -27,6 +27,9 @@ pub struct TextMsg {
 #[derive(Deserialize, Debug, Clone)]
 pub struct Account {
     balance: Balance,
+    token_balance: f64,
+    open_orders: f64,
+    fee_spend: f64,
     earnings: f64,
     change: f64,
 }
@@ -45,6 +48,8 @@ pub struct Token {
     pub round_id: u64,
     pub instid: String,
     pub buy_price: f64,
+    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
+    pub buy_ts: Duration,
     #[serde(rename = "px")]
     pub price: f64,
     pub change: f32,
@@ -63,10 +68,18 @@ pub struct Token {
     pub cooldown: Duration,
     pub candlesticks: Vec<Candlestick>,
     pub status: String,
+    pub config: Config,
     //pub orders: Option<String>,
     pub exit_reason: Option<String>,
 }
 
+#[serde_with::serde_as]
+#[derive(Deserialize, Debug, Clone)]
+pub struct Config {
+    pub sell_floor: f32,
+    #[serde_as(as = "serde_with::DurationSeconds<i64>")]
+    pub timeout: Duration,
+}
 #[serde_with::serde_as]
 #[derive(Deserialize, Debug, Clone)]
 pub struct Candlestick {
@@ -146,8 +159,6 @@ struct FrontEnd {
     ws_receiver: WsReceiver,
     text_to_send: String,
     latest_event_per_channel: HashMap<String, WsEvent>,
-    events_count_per_second: HashMap<String, u32>,
-    new_events_count_per_second: HashMap<String, u32>,
     account_history: Vec<Account>,
     timestamps: Vec<i64>,
     last_update: std::time::Instant,
@@ -160,8 +171,6 @@ impl FrontEnd {
             ws_receiver,
             text_to_send: Default::default(),
             latest_event_per_channel: Default::default(),
-            events_count_per_second: Default::default(),
-            new_events_count_per_second: Default::default(),
             account_history: Vec::new(),
             timestamps: Vec::new(),
             last_update: std::time::Instant::now(),
@@ -173,12 +182,6 @@ impl FrontEnd {
             if let WsEvent::Message(WsMessage::Text(text)) = &event {
                 let data = serde_json::from_str::<TextMsg>(text).unwrap();
 
-                // Update the events per second count
-                *self
-                    .new_events_count_per_second
-                    .entry(data.channel.clone())
-                    .or_insert(0) += 1;
-
                 // Store the latest event per channel
                 self.latest_event_per_channel
                     .insert(data.channel.clone(), event.clone());
@@ -188,8 +191,6 @@ impl FrontEnd {
         // Every second, update the real events per second count
         let now = std::time::Instant::now();
         if self.last_update.elapsed().as_secs() >= 1 {
-            self.events_count_per_second = self.new_events_count_per_second.clone();
-            self.new_events_count_per_second.clear();
             self.last_update = now;
         }
 
@@ -213,12 +214,16 @@ impl FrontEnd {
             let max_width = ui.available_width();
             for channel in channels {
                 let event = self.latest_event_per_channel.get(&channel).unwrap();
-                let events_per_second = self.events_count_per_second.get(&channel).unwrap_or(&0);
                 let msg = match event {
                     WsEvent::Message(WsMessage::Text(text)) => {
                         serde_json::from_str::<TextMsg>(text).unwrap()
                     }
                     _ => continue,
+                };
+                let legend = Legend {
+                    text_style: TextStyle::Monospace,
+                    position: Corner::LeftBottom,
+                    background_alpha: 0.5,
                 };
                 if channel == *"account" {
                     let account = match serde_json::from_str::<Account>(&msg.data) {
@@ -233,13 +238,21 @@ impl FrontEnd {
                     let change = ChangeChart::new(&self.account_history, &self.timestamps);
                     let earnings = EarningsChart::new(&self.account_history, &self.timestamps);
                     let latest_account = self.account_history.last().unwrap();
-                    let legend = Legend {
-                        text_style: TextStyle::Monospace,
-                        position: Corner::LeftBottom,
-                        background_alpha: 0.5,
-                    };
+
                     ui.horizontal_wrapped(|ui| {
                         ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.heading(RichText::new("Balances:").color(Color32::DARK_GRAY));
+
+                                ui.add_space(3.0);
+                                ui.label(format!("Current: {:.2}", latest_account.balance.current));
+                                ui.label(" | ");
+                                ui.add_space(3.0);
+                                ui.label(format!(
+                                    "Available: {:.2}",
+                                    latest_account.balance.available
+                                ));
+                            });
                             Plot::new("balance")
                                 .legend(legend.clone())
                                 .view_aspect(100.0) // adjust this to your needs
@@ -252,29 +265,29 @@ impl FrontEnd {
                                     );
                                     plot.line(
                                         Line::new(balance.lines_values[1].clone())
+                                            .name("Token balance"),
+                                    );
+                                    plot.line(
+                                        Line::new(balance.lines_values[2].clone())
+                                            .name("Open orders balance"),
+                                    );
+                                    plot.line(
+                                        Line::new(balance.lines_values[3].clone())
                                             .name("Available balance"),
                                     );
                                 });
-                            ui.horizontal(|ui| {
-                                // Add labels for current, available and spendable balance
-                                ui.label(format!(
-                                    "Current balance: {:.2}",
-                                    latest_account.balance.current
-                                ));
-                                ui.label(format!(
-                                    "Available balance: {:.2}",
-                                    latest_account.balance.available
-                                ));
-                            });
                         });
                         ui.add_space(10.0);
 
                         ui.vertical(|ui| {
-                            let change_color = if latest_account.change >= 0.0 {
-                                Color32::GREEN
-                            } else {
-                                Color32::RED
-                            };
+                            ui.horizontal(|ui| {
+                                ui.heading(RichText::new("Change:").color(Color32::DARK_GRAY));
+                                ui.add_space(3.0);
+                                ui.heading(
+                                    RichText::new(format!("% {:.2}", latest_account.change))
+                                        .color(get_change_color(latest_account.change)),
+                                )
+                            });
                             Plot::new("change")
                                 .legend(legend.clone())
                                 .view_aspect(100.0) // adjust this to your needs
@@ -283,23 +296,21 @@ impl FrontEnd {
                                 .show(ui, |plot| {
                                     plot.line(
                                         Line::new(change.lines_values[0].clone())
-                                            .color(change_color)
+                                            .color(get_change_color(latest_account.change))
                                             .name("Change"),
                                     );
                                 });
-
-                            ui.colored_label(
-                                change_color,
-                                format!("Change: {:.2}", latest_account.change),
-                            );
                         });
                         ui.add_space(10.0);
                         ui.vertical(|ui| {
-                            let earnings_color = if latest_account.earnings >= 0.0 {
-                                Color32::GREEN
-                            } else {
-                                Color32::RED
-                            };
+                            ui.horizontal(|ui| {
+                                ui.heading(RichText::new("Earnings:").color(Color32::DARK_GRAY));
+                                ui.add_space(3.0);
+                                ui.heading(
+                                    RichText::new(format!("{:.2}", latest_account.earnings))
+                                        .color(get_change_color(latest_account.earnings)),
+                                )
+                            });
                             Plot::new("earnings")
                                 .legend(legend.clone())
                                 .view_aspect(100.0) // adjust this to your needs
@@ -308,14 +319,15 @@ impl FrontEnd {
                                 .show(ui, |plot| {
                                     plot.line(
                                         Line::new(earnings.lines_values[0].clone())
-                                            .color(earnings_color)
+                                            .color(get_change_color(latest_account.change))
                                             .name("Earnings"),
                                     );
+                                    plot.line(
+                                        Line::new(earnings.lines_values[1].clone())
+                                            .color(Color32::LIGHT_BLUE)
+                                            .name("Fees"),
+                                    );
                                 });
-                            ui.colored_label(
-                                earnings_color,
-                                format!("Earnings: {:.2}", latest_account.earnings),
-                            );
                         });
                     });
                 }
@@ -331,51 +343,111 @@ impl FrontEnd {
                         ui.horizontal(|ui| {
                             // New horizontal group for each chunk
                             for token in token_chunk {
-                                let box_plot = CandlestickBoxPlot::new(&token.candlesticks);
-
+                                let box_plot = CandlestickBoxPlot::new(
+                                    &token.candlesticks,
+                                    token.buy_ts,
+                                    token.buy_price,
+                                );
                                 ui.vertical(|ui| {
-                                    // Chart title
-                                    //ui.heading(format!("{} | Price: {} | Cooldown: {} | {}", token.instid, token.price, token.cooldown, token.status));
-                                    ui.heading(token.instid.to_string());
+                                    ui.horizontal(|ui| {
+                                        ui.heading(RichText::new(format!(
+                                            "{} [{}]",
+                                            &token.instid, token.status
+                                        )));
+                                        ui.add_space(3.0);
+                                        ui.heading(RichText::new("| Change:"));
+                                        ui.add_space(0.2);
 
-                                    // The chart itself
+                                        ui.heading(
+                                            RichText::new(format!("% {:.2}", token.change))
+                                                .color(get_change_color(token.change as f64)),
+                                        );
+                                        ui.add_space(3.0);
+                                        //ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                        if token.config.timeout == token.timeout {
+                                            ui.add_space(10.0);
+                                            ui.heading(
+                                                RichText::new("Live")
+                                                    .color(Color32::LIGHT_BLUE)
+                                                    .strong(),
+                                            );
+                                        } else {
+                                            ui.heading(RichText::new("| Timeout:"));
+                                            ui.add_space(0.2);
+                                            ui.heading(
+                                                RichText::new(format!(
+                                                    "{:.2}",
+                                                    token.timeout.num_seconds()
+                                                ))
+                                                .color(get_time_color(token.timeout.num_seconds())),
+                                            );
+                                        }
+                                        //})
+                                    });
                                     Frame::dark_canvas(ui.style()).show(ui, |ui| {
                                         plot::Plot::new(token.instid.clone())
                                             .allow_drag(true)
                                             .allow_scroll(true)
+                                            .legend(legend.clone())
                                             .allow_zoom(true)
                                             .show_y(false)
-                                            .width(max_width / 3.0 - 20.0) // Fixed width adjusted to fit 3 in a row
-                                            .height(200.0) // Fixed height
+                                            .width(max_width / 3.0 - 20.0)
+                                            .height(200.0)
                                             .show(ui, |plot_ui| {
                                                 plot_ui
                                                     .box_plot(plot::BoxPlot::new(box_plot.boxes));
                                             });
                                     });
-
-                                    // Status details under the chart
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.label(format!("Price: {}", token.price));
-                                        ui.label(format!("Cooldown: {}", token.cooldown));
-                                        ui.label(format!("Timeout: {}", token.timeout));
-                                        ui.label(format!("Status: {}", token.status));
+                                        ui.label(format!("Price: {:.5}", token.price));
+                                        ui.label(format!(
+                                            "Available Bal.: {:.4}",
+                                            token.balance.available
+                                        ));
+                                        ui.label(format!(
+                                            "Current Bal.: {:.4}",
+                                            token.balance.current
+                                        ));
+                                        if let Some(reason) = &token.exit_reason {
+                                            ui.label(format!("ER: {}", reason))
+                                        } else {
+                                            ui.label("")
+                                        };
                                     });
                                 });
                                 ui.add_space(10.0);
                             }
+                            ui.add_space(10.0);
                         });
                     }
                 };
-                CollapsingHeader::new(format!("{} - {} events/s", channel, *events_per_second))
-                    .show(ui, |ui| {
-                        ScrollArea::vertical().show(ui, |ui| {
-                            if let WsEvent::Message(WsMessage::Text(text)) = event {
-                                let data = serde_json::from_str::<TextMsg>(text).unwrap();
-                                ui.label(data.data);
-                            }
-                        });
+                CollapsingHeader::new(format!("{} events", channel)).show(ui, |ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
+                        if let WsEvent::Message(WsMessage::Text(text)) = event {
+                            let mut data = serde_json::from_str::<TextMsg>(text).unwrap();
+                            let text_edit = TextEdit::multiline(&mut data.data);
+                            ui.horizontal(|ui| {
+                                ui.add(text_edit);
+                            });
+                        }
                     });
+                });
             }
         });
+    }
+}
+
+fn get_change_color(v: f64) -> Color32 {
+    match v {
+        _ if v > 0.0 => Color32::GREEN,
+        _ if v < 0.0 => Color32::RED,
+        _ => Color32::DARK_GRAY,
+    }
+}
+
+fn get_time_color(v: i64) -> Color32 {
+    match v {
+        _ if v > 10 => Color32::LIGHT_BLUE,
+        _ => Color32::YELLOW,
     }
 }
