@@ -167,13 +167,6 @@ rpk topic delete candle1m trades tickers
 
 ```bash
 docker-compose down
+#remove scylla DB data folder
+rm ./scylla/data
 ```
-
-### Tip:
-
-If you only want to trade coins going up by a lot, set the `min_deviation` setting to something higher.
-
-### More disclaimers:
-
-The [producer](./producer) websocket gets disconnected constantly.
-It will reconnect after connection gets closed, but thats just cheating lol, and we miss around 5 seconds of data which affects trading decisions.
