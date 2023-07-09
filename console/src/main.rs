@@ -10,7 +10,10 @@ async fn main() -> eframe::Result<()> {
 
     let mut app = console::Console::default();
     app.url = "ws://127.0.0.1:9002".to_string();
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        maximized: true,
+        ..Default::default()
+    };
     eframe::run_native(
         "exchange-observer",
         native_options,

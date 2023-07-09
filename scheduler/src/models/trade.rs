@@ -132,9 +132,6 @@ impl Order {
         ord_type: &str,
         strategy: &str,
     ) -> Self {
-        //let num = size.parse::<f64>().unwrap();
-        //let size = (num * 1_000_000.0).floor() / 1_000_000.0;
-
         Self {
             id: String::new(),
             cl_ord_id: Uuid::new_v4().hyphenated().to_string().replace('-', ""),
@@ -219,6 +216,7 @@ impl Order {
         }
         Ok(())
     }
+
     pub async fn save(&self, db_session: &Session) -> Result<QueryResult> {
         let payload = serde_json::to_string_pretty(&self).unwrap();
         let payload = payload.replace("null", "0");

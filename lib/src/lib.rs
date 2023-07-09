@@ -82,6 +82,7 @@ pub struct Authentication {
 pub struct Strategy {
     #[serde(skip_deserializing)]
     pub hash: String,
+    pub order_type: String,
     pub top: usize,
     pub portfolio_size: u32,
     pub timeframe: i64,
@@ -91,6 +92,7 @@ pub struct Strategy {
     pub min_change: f32,
     pub min_change_last_candle: f32,
     pub min_deviation: f32,
+    pub max_deviation: f32,
     pub deny_list: Option<Vec<String>>,
     pub cashout: f32,
     pub quickstart: bool,
@@ -114,8 +116,6 @@ pub struct Server {
     pub enable: bool,
     pub listen_address: Ipv4Addr,
     pub port: u16,
-    pub log_level: String,
-    pub workers: u8,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -248,16 +248,18 @@ impl Strategy {
             timeframe,
             cooldown: 40,
             timeout: 40,
-            min_vol: Some((timeframe * 3500) as f64),
+            min_vol: Some((timeframe * 1500) as f64),
             min_change: 0.1,
             min_change_last_candle: 0.1,
-            min_deviation: 0.1,
+            min_deviation: 0.0,
+            max_deviation: 0.5,
             deny_list: None,
             cashout: 10.0,
             quickstart: false,
             stoploss: 3.0,
             avoid_after_stoploss: false,
             sell_floor: None,
+            order_type: "ioc".to_string(),
         }
     }
     pub fn sane_defaults(&mut self) -> &mut Self {
@@ -290,8 +292,6 @@ impl Default for Server {
             enable: false,
             listen_address: Ipv4Addr::new(127, 0, 0, 1),
             port: 3030,
-            log_level: String::from("info"),
-            workers: 8,
         }
     }
 }

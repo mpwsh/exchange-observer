@@ -2,15 +2,16 @@ version: "3"
 
 services:
 
-  scylla-node1:
+  scylla:
     container_name: scylla-node1
     image: scylladb/scylla:5.2
     restart: always
-    command: --smp 1 --memory 4G --developer-mode 1 --api-address 0.0.0.0
+    command: --smp 2 --memory 4G --developer-mode 1 --api-address 0.0.0.0
     volumes:
-      - "./scylla/scylla.yaml:/etc/scylla/scylla.yaml"
-      - "./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties"
-      - "./scylla/migration.cql:/tmp/migration.cql"
+      - ./scylla/data:/var/lib/scylla
+      - ./scylla/scylla.yaml:/etc/scylla/scylla.yaml
+      - ./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties
+      - ./scylla/migration.cql:/tmp/migration.cql
     ports:
       - 9042:9042
     networks:
@@ -18,13 +19,13 @@ services:
 
   redpanda:
     container_name: redpanda
-    image: vectorized/redpanda:v22.3.17
+    image: vectorized/redpanda:v23.1.13
     command:
       - redpanda start
-      - --smp 1
+      - --smp 2
       - --overprovisioned
       - --node-id 0
-      - --memory 2G
+      - --memory 4G
       - --reserve-memory 2G
       - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
       - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://0.0.0.0:9092

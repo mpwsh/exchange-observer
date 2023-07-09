@@ -34,6 +34,8 @@ pub struct Token {
     pub round_id: u64,
     pub instid: String,
     pub buy_price: f64,
+    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
+    pub buy_ts: Duration,
     #[serde(rename = "px")]
     pub price: f64,
     pub change: f32,
@@ -169,6 +171,7 @@ impl Token {
             round_id: 0,
             instid: instid.to_string(),
             buy_price: 0.0,
+            buy_ts: Duration::seconds(0),
             price: 0.0,
             std_deviation: 0.0,
             balance: Balance {
@@ -216,16 +219,16 @@ impl Token {
         &mut self,
         trade_enabled: bool,
         auth: Authentication,
-        strategy: &str,
+        strategy: &Strategy,
     ) -> Result<&Self> {
-        let ord_type = "ioc";
+        self.buy_price = self.price;
         let mut order = trade::Order::new(
             &self.instid,
             self.buy_price.to_string(),
             self.balance.start.to_string(),
             Side::Buy,
-            ord_type,
-            strategy,
+            &strategy.order_type,
+            &strategy.hash,
         );
         order.publish(trade_enabled, &auth).await?;
         self.orders.get_or_insert_with(Vec::new).push(order);
@@ -237,14 +240,23 @@ impl Token {
         &mut self,
         trade_enabled: bool,
         auth: Authentication,
-        strategy: &str,
+        strategy: &Strategy,
     ) -> Result<&Self> {
-        let sell_balance = match self.balance.available {
-            x if x > 1_000_000.0 => ((x / 1_000_000.0).floor() * 1_000_000.0) - 1.0,
-            x if x > 100_000.0 => (x / 100_000.0).floor() * 100_000.0,
-            x if x > 1_000.0 => (x / 1_000.0).floor() * 1_000.0,
-            _ => self.balance.available, // if it's less than 1000, leave it as it is
+        let sell_balance = if trade_enabled {
+            Account::get_balance(&self.instid.replace("-USDT", ""), &auth)
+                .await
+                .unwrap_or(self.balance.available)
+        } else {
+            self.balance.available
+            /*
+            match self.balance.available {
+                x if x > 1_000_000.0 => ((x / 1_000_000.0).floor() * 1_000_000.0) - 1.0,
+                x if x > 100_000.0 => (x / 100_000.0).floor() * 100_000.0,
+                x if x > 1_000.0 => (x / 1_000.0).floor() * 1_000.0,
+                _ => self.balance.available,
+            }*/
         };
+
         //Count sell atempts and sell to market_price if above x
         let sell_count = self
             .orders
@@ -253,24 +265,37 @@ impl Token {
             .iter()
             .filter(|o| o.side == Side::Sell)
             .count();
+
+        //sell to market price if we tried to sell 5 times
         let ord_type = match sell_count {
-            x if x < 5 => "ioc",
+            x if x <= 5 => &strategy.order_type,
             _ => "market",
         };
+
         let mut order = trade::Order::new(
             &self.instid,
             self.price.to_string(),
             sell_balance.to_string(),
             Side::Sell,
             ord_type,
-            strategy,
+            &strategy.hash,
         );
 
         order.publish(trade_enabled, &auth).await?;
+
+        if order
+            .response
+            .as_ref()
+            .map_or(false, |response| response.code.parse::<i64>().unwrap() != 0)
+        {
+            order.state = OrderState::Failed;
+        }
+
         self.orders.get_or_insert_with(Vec::new).push(order);
 
         Ok(self)
     }
+
     pub fn get_exit_reason(&self, strategy: &Strategy, token_found: bool) -> Option<ExitReason> {
         //thresholds
         let timeout_threshold = Duration::seconds(strategy.timeout - 5);
@@ -280,18 +305,25 @@ impl Token {
             .unwrap_or((strategy.timeframe * 1600) as f64)
             / strategy.timeframe as f64;
         let low_volume_condition = |c: &&Candlestick| c.vol < volume_threshold;
-        let zero_change_condition = |c: &&Candlestick| c.change == 0.0;
 
         let low_volume = self
             .candlesticks
             .iter()
             .filter(low_volume_condition)
             .count();
-        let low_change = self
+
+        // Take the last 5 candlesticks (or fewer if there are not enough)
+        let last_candles_change: Vec<_> = self
             .candlesticks
             .iter()
-            .filter(zero_change_condition)
-            .count();
+            .rev()
+            .take(5)
+            .filter(|&c| c.change == 0.0)
+            .collect::<Vec<&Candlestick>>();
+
+        if last_candles_change.len() >= (strategy.timeframe / 2) as usize {
+            return Some(ExitReason::LowChange);
+        }
 
         if self.timeout.num_seconds() <= 0 {
             return Some(ExitReason::Timeout);
@@ -312,11 +344,6 @@ impl Token {
         if low_volume as i64 >= strategy.timeframe / 2 {
             //Half of the candles in the selected timeframe show volume lower than our spendable
             //  return Some(ExitReason::LowVolume);
-        }
-
-        if low_change as i64 >= strategy.timeframe / 2 {
-            //Half of the candles in the selected timeframe show 0 change
-            //return Some(ExitReason::LowChange);
         }
 
         None
@@ -343,7 +370,7 @@ impl Token {
                 results_count = c;
             }
         };
-        if results_count != 0 {
+        if results_count >= 1 {
             let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 self.instid,
@@ -356,20 +383,21 @@ impl Token {
                     time_deviation.push(highest_elapsed as f32);
                 }
             };
-            self.config.sell_floor = std_deviation(&change_deviation[..]).unwrap();
-            self.config.timeout = Duration::seconds(strategy.timeout);
-            //    Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
-            if self.config.timeout.num_seconds() >= 30 || self.config.sell_floor >= 0.1 {
-                /*
-                self.logs.push(format!(
-                    "[DISABLED] Found reports for {}, using new floor {} and timeout {}",
-                    self.instid, self.config.sell_floor, self.config.timeout
-                ));*/
+            let change_target = std_deviation(&change_deviation[..]).unwrap();
+            let timeout_target =
+                Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
+
+            if timeout_target.num_seconds() < 30 {
+                self.config.timeout = Duration::seconds(strategy.timeout);
                 self.timeout = self.config.timeout;
             } else {
-                self.timeout = Duration::seconds(strategy.timeout);
-                self.config.timeout = self.timeout;
+                self.timeout = timeout_target;
+                self.config.timeout = timeout_target;
+            };
+            if change_target < 0.1 {
                 self.config.sell_floor = strategy.sell_floor.unwrap();
+            } else {
+                self.config.sell_floor = change_target;
             };
         } else {
             self.timeout = Duration::seconds(strategy.timeout);
@@ -383,23 +411,27 @@ impl Token {
         let denied = deny_list
             .iter()
             .any(|i| format!("{}-USDT", i) == self.instid);
+
         let pcc = self
             .candlesticks
             .iter()
             .filter(|x| x.vol > spendable)
             .count();
-        let non_zero_candles = self.candlesticks.iter().filter(|x| x.vol > 0.00).count();
+
+        let cchange = self.candlesticks.iter().filter(|x| x.change > 0.0).count();
+
         let blank_candle = Candlestick::new(self.price);
         let last_candle = self.candlesticks.last().unwrap_or(&blank_candle);
 
         !denied
             // No missing candles in our data
             && self.candlesticks.len() >= strategy.timeframe as usize
-            && self.candlesticks.len() == non_zero_candles
             // At least half of the candles should have higher volume than our spendable
             && pcc >= strategy.timeframe as usize / 2
+            // At least half of the candles have some change
+            && cchange >= strategy.timeframe as usize / 2
             && self.change >= strategy.min_change
-            && self.std_deviation >= strategy.min_deviation
+            && (self.std_deviation >= strategy.min_deviation && self.std_deviation <= strategy.max_deviation)
             && last_candle.vol >= spendable
             && last_candle.change > strategy.min_change_last_candle
             && self.vol > strategy.min_vol.unwrap()
@@ -430,21 +462,60 @@ impl Token {
         self.std_deviation = std_deviation(&changes).unwrap_or(0.0);
         self
     }
-    pub fn set_status(&mut self, order: &Order) -> &mut Self {
-        self.status = match order.state {
-            OrderState::Filled => match order.side {
-                Side::Buy => token::Status::Trading,
-                Side::Sell => token::Status::Exited,
-            },
-            OrderState::Cancelled => match order.side {
-                Side::Buy => token::Status::Waiting,
-                Side::Sell => token::Status::Trading,
-            },
-            _ => match order.side {
-                Side::Buy => token::Status::Buying,
-                Side::Sell => token::Status::Selling,
-            },
+
+    pub fn update_reports(&mut self, timeout: i64) -> &mut Self {
+        let mut t = self;
+        t.report.time_left = t.timeout.num_seconds();
+        t.change = get_percentage_diff(t.price, t.buy_price);
+        if t.change >= t.report.highest {
+            t.report.highest = t.change;
+            t.report.highest_elapsed = timeout - t.timeout.num_seconds();
         };
-        self
+        if t.change <= t.report.lowest {
+            t.report.lowest = t.change;
+            t.report.lowest_elapsed = timeout - t.timeout.num_seconds();
+        }
+        t
+    }
+
+    pub async fn update_orders(
+        &mut self,
+        enable_trading: bool,
+        auth: &Authentication,
+    ) -> Result<&mut Self> {
+        if let Some(orders) = &mut self.orders {
+            for order in orders.iter_mut().filter(|o| {
+                o.state == OrderState::Live
+                    && o.prev_state != OrderState::Created
+                    && o.state != OrderState::Filled
+            }) {
+                log::info!(
+                    "[{}] Checking order state. result: {}",
+                    self.instid,
+                    order.state.to_string()
+                );
+                if enable_trading {
+                    log::info!("[{}] Retrieving order state form exchange", self.instid);
+                    let got_state = order.get_state(auth).await?;
+                    if order.state != got_state {
+                        order.state = got_state.clone();
+                    }
+                } else {
+                    use rand::thread_rng;
+                    use rand::Rng;
+                    let mut rng = thread_rng();
+                    let random_state = if rng.gen_bool(1.0 / 6.0) {
+                        OrderState::Filled
+                    } else {
+                        OrderState::Cancelled
+                    };
+
+                    order.state = random_state;
+                    order.id = order.cl_ord_id.clone();
+                };
+                self.status = Status::from_order(order);
+            }
+        }
+        Ok(self)
     }
 }

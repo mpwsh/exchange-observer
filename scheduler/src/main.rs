@@ -1,15 +1,15 @@
 pub use prelude::*;
+use ws::{channel, server};
 mod app;
 mod models;
 mod okx;
-pub mod prelude;
-mod server;
+mod prelude;
 mod ui;
 mod utils;
 mod ws;
+
 const REFRESH_CYCLES: u64 = 950;
 const NOTIFY_SECS: i64 = 1800;
-const ORDER_CHECK_DELAY_SECS: i64 = 3;
 const UI_LOG_LINES: usize = 8;
 
 pub const BASE_URL: &str = "https://www.okx.com";
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //setup account balance and spendable per token
     let mut account = Account::new().set_balance(cfg.account.balance, cfg.account.spendable);
     account.authentication = cfg.exchange.clone().unwrap_or_default().authentication;
-    //cfg.strategy.sane_defaults();
+
     app.set_cooldown(cfg.strategy.cooldown);
     if cfg.ui.enable {
         app.term.hide_cursor()?;
@@ -47,10 +47,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (sender, receiver) = tokio::sync::mpsc::channel(100);
     if let Some(server) = server {
         tokio::spawn(async {
-            ws::transmit(server, receiver).await.unwrap();
+            channel::transmit(server, receiver).await.unwrap();
         });
     }
-
+    let mut quickstart_completed = false;
     loop {
         if cfg.ui.enable {
             app.term.move_cursor_to(0, 0)?;
@@ -59,32 +59,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let unix_timestamp = app.time.utc.timestamp();
         app.time.now = time::Instant::now();
 
-        // Prepare the data to send
-        let ws_data = ws::WsData {
-            account: account.clone(),
-            tokens: app.tokens.clone(),
-            ts: app.time.utc,
-        };
-
-        // Send the data
-        if let Err(_) = sender.send(ws_data).await {
-            app.logs
-                .push("Error sending data to transmit function".to_string());
-        };
-
         //Retrieve and process top tokens
         app.fetch_tokens(cfg.strategy.timeframe).await;
         app.tokens = app
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
-            .await
-            .unwrap();
+            .await?;
+
         app.filter_invalid(&cfg.strategy, account.balance.spendable);
         app.clean_top(cfg.strategy.top).get_tickers().await;
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
-        //Portoflio
-        app.update_cooldown(&account.portfolio);
+
+        //update portfolio and tracked tokens
+        app.update_cooldowns(&account.portfolio);
 
         account.portfolio = app.update_timeouts(account.portfolio, &cfg.strategy);
         account.portfolio = app
@@ -92,29 +80,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await?;
 
         //update reports
-        account.portfolio = app.update_reports(account.portfolio, cfg.strategy.timeout);
-
-        //if unix_timestamp.rem_euclid(ORDER_CHECK_DELAY_SECS) == 0 {
-        //Check and update order states
-        account.portfolio = app.update_order_states(account.portfolio).await?;
-        //TODO: Cancel live orders if above order_ttl
-        //account.portfolio = app.cancel_expired_orders(account.portfolio).await?;
-        // }
-
-        //keep tokens with balance > 0 usd
-        //account.portfolio.retain(|t| t.balance.current > 0.0);
-
-        //Selling and token removal validation occurs on every loop
+        for token in account.portfolio.iter_mut() {
+            token
+                .update_reports(cfg.strategy.timeout)
+                .update_orders(app.exchange.enable_trading, &app.exchange.authentication)
+                .await?;
+        }
 
         account.balance.set_current(0.0);
         account
             .calculate_balance(&mut app)
-            .await
+            .await?
             .calculate_earnings();
 
         account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;
         account.clean_portfolio();
+
+        // Websocket
+        // Only send tokens that are actively trading
+        let trading_tokens: Vec<Token> = account
+            .portfolio
+            .clone()
+            .into_iter()
+            .filter(|t| {
+                t.orders.as_ref().map_or(false, |orders| {
+                    orders.iter().any(|order| order.state == OrderState::Filled)
+                })
+            })
+            .collect();
+
+        let ws_data = ws::channel::Data {
+            tokens: trading_tokens,
+            balance: account.balance.clone(),
+            fee_spend: account.fee_spend,
+            earnings: account.earnings,
+            change: account.change,
+            ts: app.time.utc,
+        };
+
+        // Send the data
+        if (sender.send(ws_data).await).is_err() {
+            app.logs
+                .push("Error sending data to transmit function".to_string());
+        };
 
         // UI Display
         if cfg.ui.enable {
@@ -138,7 +147,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.time.uptime = app.time.uptime + app.time.elapsed;
         app.time.elapsed = Duration::milliseconds(app.time.now.elapsed().as_millis() as i64);
 
-        app.set_cooldown(cfg.strategy.cooldown);
+        if !quickstart_completed {
+            app.set_cooldown(cfg.strategy.cooldown);
+            quickstart_completed = true;
+        }
 
         //Send notifications
         if app.pushover.enable {

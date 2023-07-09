@@ -47,8 +47,7 @@ impl Account {
         }
     }
 
-    pub async fn calculate_balance(&mut self, app: &mut App) -> &mut Self {
-        let usdt_taker_fee = calculate_fees(self.balance.spendable, 0.10);
+    pub async fn calculate_balance(&mut self, app: &mut App) -> Result<&mut Self> {
         let mut open_order_value = 0.0;
         let mut token_balances = 0.0;
         for t in self.portfolio.iter_mut() {
@@ -63,6 +62,8 @@ impl Account {
                     {
                         order.state = OrderState::Failed;
                     }
+
+                    //Get price and size of the order
                     let (price, size) = match (order.px.parse::<f64>(), order.sz.parse::<f64>()) {
                         (Ok(price), Ok(size)) => (price, size),
                         _ => {
@@ -73,34 +74,34 @@ impl Account {
                             continue;
                         }
                     };
-                    let order_amount = (size * price) + usdt_taker_fee;
+
+                    //calculate fees based on the order
+                    let usdt_taker_fee =
+                        calculate_fees(self.balance.spendable, app.exchange.taker_fee);
+                    let usdt_order_amount = (size * price) - usdt_taker_fee;
+                    let token_balance_after_fees =
+                        size - calculate_fees(size, app.exchange.taker_fee); //+ 0.0001);
                     match order.state {
                         OrderState::Live => match order.side {
                             Side::Buy => {
-                                self.balance.available -= order_amount;
-                                open_order_value += order_amount;
-                                // Add the value of the open order
-                                //app.logs.push(order_amount.to_string());
-                                //self.balance.current += order_amount;
+                                self.balance.available -= self.balance.spendable;
+                                open_order_value += self.balance.spendable;
                             }
                             Side::Sell => {
                                 t.balance.available -= size;
-                                open_order_value += order_amount;
+                                open_order_value += usdt_order_amount;
                             }
                         },
                         OrderState::Cancelled => match order.side {
                             Side::Buy => {
-                                self.balance.available += (size * price) + usdt_taker_fee;
+                                self.balance.available += self.balance.spendable;
                             }
                             Side::Sell => {
-                                t.balance.available = t.balance.start;
+                                t.balance.available += size;
                             }
                         },
                         OrderState::Failed => match order.side {
-                            Side::Buy => {
-                                app.logs.push("Failed to buy, retry unimplemented yet. Should check USDT Balance and retry".to_string());
-                                //self.balance.available += self.get_balance(&t, &app.exchange.authentication);
-                            }
+                            Side::Buy => (),
                             Side::Sell => {
                                 if app.exchange.enable_trading {
                                     t.balance.available = Account::get_balance(
@@ -113,19 +114,34 @@ impl Account {
                             }
                         },
                         OrderState::Filled => {
-                            self.trades += 1;
-                            self.fee_spend += usdt_taker_fee;
                             match order.side {
                                 Side::Buy => {
-                                    t.balance.current = t.balance.start;
-                                    t.balance.available = t.balance.start;
+                                    if app.exchange.enable_trading {
+                                        log::info!("Retrieving balance from exchange");
+                                        let balance = Account::get_balance(
+                                            &t.instid.replace("-USDT", ""),
+                                            &app.exchange.authentication,
+                                        )
+                                        .await?;
+
+                                        //Add the balance to the token. this will be balance with fees discounted.
+                                        t.balance.available = balance;
+                                        t.balance.current = t.balance.available;
+                                    } else {
+                                        //Calculate fees locally
+                                        t.balance.available = token_balance_after_fees;
+                                        t.balance.current = token_balance_after_fees;
+                                    }
                                 }
                                 Side::Sell => {
                                     t.balance.current -= size;
-                                    self.balance.available += (size * price) - usdt_taker_fee;
+                                    self.balance.available += token_balance_after_fees * price;
                                     app.logs.push(t.report.to_string());
                                 }
                             }
+                            self.trades += 1;
+                            self.fee_spend += usdt_taker_fee;
+                            t.buy_ts = Duration::milliseconds(Utc::now().timestamp_millis());
                         }
                         _ => {}
                     };
@@ -137,18 +153,11 @@ impl Account {
                     order.prev_state = order.state.clone();
                 }
             }
-            token_balances += t.balance.current * t.price;
+            token_balances += t.balance.available * t.price;
         }
-        //self.balance.current += self.balance.available;
-        self.balance.current = self.balance.available + open_order_value + token_balances;
-        /*
-        app.logs.push(format!(
-            "Balance: {} | Available: {} | open_orders_value: {} | From Tokens: {} ",
-            self.balance.current, self.balance.available, open_order_value, token_balances
-        ));*/
-
+        self.balance.current += self.balance.available + open_order_value + token_balances;
         self.change = get_percentage_diff(self.balance.current, self.balance.start);
-        self
+        Ok(self)
     }
 
     pub fn calculate_earnings(&mut self) -> &mut Self {
@@ -163,12 +172,24 @@ impl Account {
 
     pub fn clean_portfolio(&mut self) -> &Self {
         self.portfolio.retain(|t| {
-            let exited = t.status == token::Status::Exited;
             let waiting = t.status == token::Status::Waiting;
-            //let no_remaining_balance = (t.balance.available*t.price) < 2.0;
-            !(exited || waiting) //&& no_remaining_balance
-        });
+            let live_orders = if let Some(orders) = t.orders.clone() {
+                orders.iter().any(|o| o.state == OrderState::Live)
+            } else {
+                true
+            };
 
+            let remaining_balance = t.balance.available * t.price > 2.0;
+            let retain = waiting || live_orders || remaining_balance;
+            if !retain {
+                log::info!(
+                    "Removing token: {} -- token state: {:?}",
+                    t.instid,
+                    t.status
+                );
+            }
+            retain
+        });
         self
     }
 
@@ -180,7 +201,6 @@ impl Account {
             t.price = token.price;
             t.status = token::Status::Buying;
             t.candlesticks = token.candlesticks.clone();
-            t.buy_price = token.price;
             self.portfolio.push(t);
         }
         self
@@ -195,7 +215,7 @@ impl Account {
             false,
             query,
         )?;
-
+        log::info!("Retrieving balance of: {}", token_id);
         let res = reqwest::Client::new()
             .get(format!("{BASE_URL}{BALANCE_ENDPOINT}{query}"))
             .header("OK-ACCESS-KEY", &auth.access_key)
@@ -206,10 +226,18 @@ impl Account {
             .await?
             .json::<OkxAccountBalanceResponse>()
             .await?;
-        let balance = &res.data[0].details[0]
-            .avail_bal
-            .parse::<f64>()
-            .unwrap_or_default();
+
+        log::info!("Response: {}", serde_json::to_string_pretty(&res)?);
+
+        let balance =
+            if let Some(balance) = res.data.get(0).and_then(|balance| balance.details.get(0)) {
+                balance
+                    .avail_bal
+                    .parse::<f64>()
+                    .map_err(|_| anyhow::anyhow!("Failed to parse balance"))?
+            } else {
+                return Err(anyhow::anyhow!("Failed to retrieve balance details"));
+            };
         Ok(balance.to_owned())
     }
 }

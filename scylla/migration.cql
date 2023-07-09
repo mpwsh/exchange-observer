@@ -84,6 +84,7 @@ WITH CLUSTERING ORDER BY (ts desc);
 CREATE TABLE IF NOT EXISTS strategies (
     hash text,
     top int,
+    order_type text,
     portfolio_size int,
     timeframe int,
     cooldown int,
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     min_change float,
     min_change_last_candle float,
     min_deviation double,
+    max_deviation double,
     deny_list list<text>,
     cashout float,
     quickstart boolean,
