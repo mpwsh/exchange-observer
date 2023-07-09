@@ -104,10 +104,16 @@ This is how the scheduler UI looks with `ui.enable` = `true`
 If using the scheduler with websocket server enabled you can connect to it using a very rough expermiental UI made with [egui](https://github.com/emilk/egui).
 The console is just a listener, so cant send stuff back to the scheduler for now.
 
-Run with:
+Run the app with:
 
 ```bash
 cargo run --bin console
+```
+
+Build web and run with:
+
+```bash
+cd console && ./build_web.sh && ./start_server.sh
 ```
 
 ![exchange-observer gui](./static/console.png)
