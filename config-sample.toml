@@ -1,6 +1,6 @@
 [account]
 #Total Available balance (Add a bit more for trade fees)
-balance=100
+balance=150
 #USDT to use to buy per selected token (can this be tied to current volume to avoid moving the candle too much?
 spendable=20
 
@@ -13,6 +13,7 @@ taker_fee=0.10
 maker_fee=0.08
 #Cancel open orders after (x) seconds
 order_ttl=30
+
 [exchange.authentication]
 access_key=""
 secret_key=""
@@ -22,43 +23,47 @@ passphrase=""
 #Scan for the top (x) tokens
 top=8
 #Work with (x) amount of tokens at the same time
-portfolio_size=5
+portfolio_size=6
 #Block following tokens
+#deny_list=["LUNC", "UST", "BTC", "ETH", "MAGIC", "TAI", "VALUE", "AIDOGE", "APIX", "SWRV", "MDA", "BORING", "TRUE", "XPR", "TOWN", "FODL", "WSB", "TAMA", "SKEB", "CTC", "DEVT","BNT"]
 
-#deny_list=["LUNC", "UST", "BTC", "ETH", "MAGIC", "VALUE", "AIDOGE", "APIX", "SWRV", "MDA", "BORING", "TRUE", "XPR", "TOWN", "FODL", "WSB", "TAMA", "SKEB", "CTC", "DEVT","BNT"]
-
+#Order Type: market or "Immediate or cancel (ioc)"
+order_type="ioc"
 #retrieve last(x) minutes of candlesticks to analyze the performance of tokens
-timeframe=5
+timeframe=10
 #time to wait before adding tokens to portfolio
-cooldown=5
+cooldown=10
 #Dont wait for cooldown on first round (set to false when using blank database)
 quickstart=true
 #Min vol to be elegible (a sane default is: timeframe * 1600 to avoid tokens with high volatility in short periods of time)
-min_vol=10000.0
+min_vol=20000
 #Min change to be elegible
-min_change=0.01
+min_change=0.1
 #Last candle should be at least this much to be eligible
 min_change_last_candle=0.05
+#Min/max standard deviation on selected timeframe. (std deviation coming from sum of all candles)
 #Min standard deviation on selected timeframe. (std deviation coming from sum of all candles)
-min_deviation=0.01
+min_deviation=0.05
+max_deviation=0.1
 #sell if losing more than (x) % (optional. Will sell if token is not in top tokens when cooldown finishes)
-stoploss=6.0
+stoploss=2.0
 #Sell if earnings on selected token are above (x)%.
-cashout=3.0 #token will be bought back with spendable balance if is still selected
-#Only sell tokens from portfolio if earnings are above (x)%
-sell_floor=1.0
-#sell if timeout is reached, even if 'sell_above' was not met
-timeout=240
+cashout=4.0 #token will be bought back with spendable balance if is still selected
+#Only sell tokens from portfolio if earnings are above (x)% -- set to 0.3 to at least break even
+sell_floor=0.45
+#sell if timeout is reached, even if 'sell_above' was not met. Min timeout is 10 seconds
+timeout=180
 #Avoid trading a token if stoploss was triggered
 avoid_after_stoploss=true
 
 [ui]
+enable=false
 dashboard=true
 portfolio=true
-deny_list=true
-system=true
+deny_list=false
 balance=true
 strategy=true
+system=true
 logs=true
 
 [pushover]
@@ -67,18 +72,11 @@ token=""
 key=""
 
 [server]
-#websocket server
-enable=false
+enable=true
 listen_address="0.0.0.0"
-#Possible values -- debug, info, warn, error
-log_level = "debug"
-#port for the server to listen on
-port = 3030
-#CPU Threads for actix
-workers = 8
+port = 9002
 
 [database]
-#Scylla or Cassandra
 ip="127.0.0.1"
 port=9042
 workers=8
@@ -87,7 +85,6 @@ keyspace="okx"
 data_ttl=7200 # 2 hours
 
 [mq]
-#Redpanda or Kafka
 ip="127.0.0.1"
 port=9092
 

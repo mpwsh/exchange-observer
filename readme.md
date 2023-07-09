@@ -24,7 +24,7 @@ Each setting in [config.toml](config-sample.toml) is explained but feel free ope
 
 - Producer (Okx websocket messages -> Redpanda)
 - Consumer (Redpanda messages -> Scylla)
-- Scheduler (ScyllaDB Queries -> TUI)
+- Scheduler (ScyllaDB Queries -> Token evaluation -> UI)
 
 ## Deploy Redpanda and Scylla
 
@@ -37,7 +37,7 @@ docker-compose up -d
 Wait until the node is up and run the migrations.
 
 ```bash
-alias nodetool="docker exec -it scylla-node1 nodetool"
+alias nodetool="docker exec -it scylla nodetool"
 nodetool status
 ### Should show 'UN' (up-normal)
 Status=Up/Down
@@ -49,15 +49,16 @@ UN  172.26.0.2  540 KB     256          ?       c35c31db-0c92-4064-b2ba-2da43fa6
 Run the migrations
 
 ```bash
-alias cqlsh="docker exec -it scylla-node1 cqlsh"
+alias cqlsh="docker exec -it scylla cqlsh"
 cqlsh -f /tmp/migration.cql
 ```
 
 ## Endpoints
 
 ```bash
-ScyllaDB: localhost:9042
-Redpanda console access: http://localhost:8080/topics
+ScyllaDB: 127.0.0.1:9042
+Redpanda: 127.0.0.1:9092
+Redpanda console: http://localhost:8080/topics
 ```
 
 ## Configure data retention for each topic
@@ -93,10 +94,36 @@ Start
 cargo run --bin scheduler
 ```
 
-## TUI
+## Scheduler terminal UI
 
-This is how the scheduler TUI looks.
+This is how the scheduler UI looks with `ui.enable` = `true`
 ![exchange-observer ui](./static/ui.png)
+
+## Scheduler GUI
+
+If using the scheduler with websocket server enabled you can connect to it using a very rough expermiental wasm UI made with [egui](https://github.com/emilk/egui) and [ewebsock](https://github.com/rerun-io/ewebsock).
+
+The console is just a listener, so can't send stuff back to the scheduler for now.
+
+Run the app with:
+
+```bash
+cargo run --bin console
+```
+
+Or build web and run with:
+
+```bash
+cd console && ./build_web.sh && ./start_server.sh
+```
+
+Or run compiled version in the repo with:
+
+```bash
+basic-http-server --addr 0.0.0.0:8082 .
+```
+
+![exchange-observer gui](./static/console.png)
 
 ### Push Notifications
 
@@ -108,7 +135,7 @@ It will also send a notification when cash-outs and stop loss trigger.
 Connect to Scylla using `cqlsh`
 
 ```bash
-docker exec -it scylla-node1 cqlsh
+docker exec -it scylla cqlsh
 Use HELP for help.
 cqlsh> use okx;
 cqlsh:okx> describe tables;
@@ -140,33 +167,6 @@ rpk topic delete candle1m trades tickers
 
 ```bash
 docker-compose down
+#remove scylla DB data folder
+rm ./scylla/data
 ```
-
-### Tip:
-
-If you only want to trade coins going up by a lot, set the `min_deviation` setting to something higher.
-
-### More disclaimers:
-
-The [producer](./producer) websocket gets disconnected constantly.
-It will reconnect after connection gets closed, but thats just cheating lol, and we miss around 5 seconds of data which affects trading decisions.
-
-## TODO:
-
-- [ ] Add abort trading logic. shut down after losing X amount
-- [ ] Randomize strategy to allow automated strategy testing
-- [ ] Dont allow reusing same strategy if earnings were negative. Randomize or use previous reports to find the best values
-- [x] Hash the strategy struct and add it to a column in the reports table
-- [ ] Add a column with an array of retrieved candles change over time. Ex: [0.2,-0,1,-2.0,-4.0,0.1,2.0,3.0]
-- [ ] Move strategy to its own file and add hot-reload.
-- [x] Deprecate global cooldown. (Each potential token needs to have its own)
-- [x] Implement push notifications using pushover
-- [x] Notify current balance, earnings, wins, losses every x minutes.
-- [x] Notify on Cashout, send token and earnings on that trade.
-- [x] Notify on stoploss triggered, send token and losses on that trade.
-- [ ] Send alert if a token is above %X change. Notify volume as well.
-- [ ] Start sending messages to a redpanda topic announcing tokens selected
-- [ ] Create a portfolio topic and send additions and removals
-- [ ] Add buys and sells in the report column, not only sells.
-- [x] Add fees paid in the report column on each trade
-- [ ] Add a executions table with all buys and sells, including instid,status,sz,px,timestamp,status (completed,processing)
