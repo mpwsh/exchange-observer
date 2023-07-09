@@ -116,6 +116,12 @@ Build web and run with:
 cd console && ./build_web.sh && ./start_server.sh
 ```
 
+OR, run compiled version in the repo with:
+
+```bash
+basic-http-server --addr 0.0.0.0:8082 .
+```
+
 ![exchange-observer gui](./static/console.png)
 
 ### Push Notifications
