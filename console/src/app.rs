@@ -3,13 +3,15 @@ use chrono::{DateTime, Duration, Utc};
 use eframe::egui::{
     menu,
     plot::{self, Corner, Legend, Line, Plot},
-    Align, CentralPanel, CollapsingHeader, Color32, Context, Frame, Key, Layout, RichText,
-    ScrollArea, TextEdit, TextStyle, TopBottomPanel,
+    CentralPanel, CollapsingHeader, Color32, Context, Frame, Key, RichText, ScrollArea, TextEdit,
+    TextStyle, TopBottomPanel,
 };
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
+use models::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 mod charts;
+mod models;
 #[derive(Default)]
 pub struct Console {
     pub url: String,
@@ -22,77 +24,6 @@ pub struct TextMsg {
     channel: String,
     data: String,
     ts: DateTime<Utc>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Account {
-    balance: Balance,
-    token_balance: f64,
-    open_orders: f64,
-    fee_spend: f64,
-    earnings: f64,
-    change: f64,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Balance {
-    pub start: f64,
-    pub current: f64,
-    pub available: f64,
-    pub spendable: f64,
-}
-
-#[serde_with::serde_as]
-#[derive(Deserialize, Debug, Clone)]
-pub struct Token {
-    pub round_id: u64,
-    pub instid: String,
-    pub buy_price: f64,
-    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
-    pub buy_ts: Duration,
-    #[serde(rename = "px")]
-    pub price: f64,
-    pub change: f32,
-    pub std_deviation: f32,
-    #[serde_as(as = "serde_with::DurationSeconds<i64>")]
-    pub timeout: Duration,
-    pub balance: Balance,
-    pub earnings: f64,
-    pub fees_deducted: bool,
-    pub vol: f64,
-    pub vol24h: f64,
-    pub change24h: f32,
-    pub range: f32,
-    pub range24h: f32,
-    #[serde_as(as = "serde_with::DurationSeconds<i64>")]
-    pub cooldown: Duration,
-    pub candlesticks: Vec<Candlestick>,
-    pub status: String,
-    pub config: Config,
-    //pub orders: Option<String>,
-    pub exit_reason: Option<String>,
-}
-
-#[serde_with::serde_as]
-#[derive(Deserialize, Debug, Clone)]
-pub struct Config {
-    pub sell_floor: f32,
-    #[serde_as(as = "serde_with::DurationSeconds<i64>")]
-    pub timeout: Duration,
-}
-#[serde_with::serde_as]
-#[derive(Deserialize, Debug, Clone)]
-pub struct Candlestick {
-    pub instid: String,
-    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
-    pub ts: Duration,
-    pub change: f32,
-    pub close: f64,
-    pub high: f64,
-    pub low: f64,
-    pub open: f64,
-    pub range: f32,
-    pub vol: f64,
 }
 
 impl eframe::App for Console {
@@ -161,7 +92,6 @@ struct FrontEnd {
     latest_event_per_channel: HashMap<String, WsEvent>,
     account_history: Vec<Account>,
     timestamps: Vec<i64>,
-    last_update: std::time::Instant,
 }
 
 impl FrontEnd {
@@ -173,7 +103,6 @@ impl FrontEnd {
             latest_event_per_channel: Default::default(),
             account_history: Vec::new(),
             timestamps: Vec::new(),
-            last_update: std::time::Instant::now(),
         }
     }
 
@@ -186,12 +115,6 @@ impl FrontEnd {
                 self.latest_event_per_channel
                     .insert(data.channel.clone(), event.clone());
             }
-        }
-
-        // Every second, update the real events per second count
-        let now = std::time::Instant::now();
-        if self.last_update.elapsed().as_secs() >= 1 {
-            self.last_update = now;
         }
 
         CentralPanel::default().show(ctx, |ui| {
@@ -207,9 +130,8 @@ impl FrontEnd {
 
             ui.separator();
 
-            //ScrollArea::vertical().show(ui, |ui| {
             let mut channels: Vec<String> = self.latest_event_per_channel.keys().cloned().collect();
-            channels.sort(); // Sort the keys alphabetically
+            channels.sort();
 
             let max_width = ui.available_width();
             for channel in channels {
@@ -408,6 +330,8 @@ impl FrontEnd {
                                             "Current Bal.: {:.4}",
                                             token.balance.current
                                         ));
+                                        ui.label(format!("SD.: {:.4}", token.std_deviation));
+
                                         if let Some(reason) = &token.exit_reason {
                                             ui.label(format!("ER: {}", reason))
                                         } else {
