@@ -37,19 +37,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if cfg.strategy.quickstart {
         app.set_cooldown(1);
     };
-    let server = if cfg.server.clone().unwrap_or_default().enable {
-        Some(server::WebSocket::run("0.0.0.0:9002").await)
-    } else {
-        None
-    };
-
-    // Websocket message channel
     let (sender, receiver) = tokio::sync::mpsc::channel(100);
-    if let Some(server) = server {
-        tokio::spawn(async {
-            channel::transmit(server, receiver).await.unwrap();
-        });
+
+    if let Some(server) = &cfg.server {
+        if server.enable {
+            let address = format!("{}:{}", server.listen_address, server.port);
+            let server = server::WebSocket::run(&address).await;
+
+            tokio::spawn(async {
+                channel::transmit(server, receiver).await.unwrap();
+            });
+        }
     }
+
     let mut quickstart_completed = false;
     loop {
         if cfg.ui.enable {
