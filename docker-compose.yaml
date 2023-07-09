@@ -2,7 +2,7 @@ version: "3"
 
 services:
 
-  scylla-node1:
+  scylla:
     container_name: scylla-node1
     image: scylladb/scylla:5.2
     restart: always
