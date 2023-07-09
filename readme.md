@@ -101,8 +101,9 @@ This is how the scheduler UI looks with `ui.enable` = `true`
 
 ## Scheduler GUI
 
-If using the scheduler with websocket server enabled you can connect to it using a very rough expermiental UI made with [egui](https://github.com/emilk/egui).
-The console is just a listener, so cant send stuff back to the scheduler for now.
+If using the scheduler with websocket server enabled you can connect to it using a very rough expermiental wasm UI made with [egui](https://github.com/emilk/egui) and [ewebsock](https://github.com/rerun-io/ewebsock).
+
+The console is just a listener, so can't send stuff back to the scheduler for now.
 
 Run the app with:
 
@@ -110,13 +111,13 @@ Run the app with:
 cargo run --bin console
 ```
 
-Build web and run with:
+Or build web and run with:
 
 ```bash
 cd console && ./build_web.sh && ./start_server.sh
 ```
 
-OR, run compiled version in the repo with:
+Or run compiled version in the repo with:
 
 ```bash
 basic-http-server --addr 0.0.0.0:8082 .
