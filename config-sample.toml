@@ -19,6 +19,16 @@ access_key=""
 secret_key=""
 passphrase=""
 
+[[exchange.channels]]
+name = "candle1m"
+topic = "candle1m"
+endpoint = "wss://ws.okx.com:8443/ws/v5/business"
+
+[[exchange.channels]]
+name = "tickers"
+topic = "tickers"
+endpoint = "wss://ws.okx.com:8443/ws/v5/public"
+
 [strategy]
 #Scan for the top (x) tokens
 top=8
