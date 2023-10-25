@@ -18,7 +18,7 @@ impl WsSender {
                 .send_message(&websocket::OwnedMessage::Text(text)),
             unknown => {
                 panic!("Don't know how to send message: {:?}", unknown);
-            }
+            },
         };
         result.map_err(|err| err.to_string())
     }
@@ -45,7 +45,7 @@ pub fn ws_connect(url: String, on_event: EventHandler) -> Result<WsSender> {
                                 eprintln!("Websocket closed: {:#?}", close_data);
                                 on_event(WsEvent::Closed);
                                 break;
-                            }
+                            },
                             websocket::OwnedMessage::Ping(data) => WsMessage::Ping(data),
                             websocket::OwnedMessage::Pong(data) => WsMessage::Pong(data),
                         };
@@ -55,10 +55,10 @@ pub fn ws_connect(url: String, on_event: EventHandler) -> Result<WsSender> {
                         ) {
                             break;
                         }
-                    }
+                    },
                     Err(err) => {
                         eprintln!("Websocket error: {:#?}", err);
-                    }
+                    },
                 }
             }
             eprintln!("Stopping websocket receiver thread")

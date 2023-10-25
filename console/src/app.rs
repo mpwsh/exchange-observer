@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use charts::{BalanceChart, CandlestickBoxPlot, ChangeChart, EarningsChart};
 use chrono::{DateTime, Duration, Utc};
 use eframe::egui::{
@@ -9,7 +11,6 @@ use eframe::egui::{
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use models::*;
 use serde::Deserialize;
-use std::collections::HashMap;
 mod charts;
 mod models;
 #[derive(Default)]
@@ -74,11 +75,11 @@ impl Console {
             Ok((ws_sender, ws_receiver)) => {
                 self.frontend = Some(FrontEnd::new(ws_sender, ws_receiver));
                 self.error.clear();
-            }
+            },
             Err(error) => {
                 log::error!("Failed to connect to {:?}: {}", &self.url, error);
                 self.error = error;
-            }
+            },
         }
     }
 }
@@ -139,7 +140,7 @@ impl FrontEnd {
                 let msg = match event {
                     WsEvent::Message(WsMessage::Text(text)) => {
                         serde_json::from_str::<TextMsg>(text).unwrap()
-                    }
+                    },
                     _ => continue,
                 };
                 let legend = Legend {
@@ -293,6 +294,11 @@ impl FrontEnd {
                                                     .color(Color32::LIGHT_BLUE)
                                                     .strong(),
                                             );
+                                        } else if let Some(reason) = &token.exit_reason {
+                                            ui.heading(
+                                                RichText::new(format!("{:.2}", reason))
+                                                    .color(Color32::DARK_BLUE),
+                                            );
                                         } else {
                                             ui.heading(RichText::new("| Timeout:"));
                                             ui.add_space(0.2);
@@ -304,7 +310,6 @@ impl FrontEnd {
                                                 .color(get_time_color(token.timeout.num_seconds())),
                                             );
                                         }
-                                        //})
                                     });
                                     Frame::dark_canvas(ui.style()).show(ui, |ui| {
                                         plot::Plot::new(token.instid.clone())
@@ -331,12 +336,6 @@ impl FrontEnd {
                                             token.balance.current
                                         ));
                                         ui.label(format!("SD.: {:.4}", token.std_deviation));
-
-                                        if let Some(reason) = &token.exit_reason {
-                                            ui.label(format!("ER: {}", reason))
-                                        } else {
-                                            ui.label("")
-                                        };
                                     });
                                 });
                                 ui.add_space(10.0);

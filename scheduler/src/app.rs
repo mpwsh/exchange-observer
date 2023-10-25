@@ -1,11 +1,13 @@
-use crate::prelude::*;
+use std::sync::Arc;
+
 use console::Term;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use pushover_rs::{
     send_pushover_request, Message, MessageBuilder, PushoverResponse, PushoverSound,
 };
-use std::sync::Arc;
 use time::Instant;
+
+use crate::prelude::*;
 
 #[derive(Debug)]
 pub struct App {
@@ -80,7 +82,7 @@ impl App {
                             ),
                         )
                         .await?;
-                    }
+                    },
                     ExitReason::Stoploss => {
                         self.notify(
                             "Stoploss Triggered".to_string(),
@@ -90,7 +92,7 @@ impl App {
                             ),
                         )
                         .await?;
-                    }
+                    },
                     _ => (),
                 }
             }
@@ -110,24 +112,24 @@ impl App {
         Ok(send_pushover_request(message).await.unwrap())
     }
 
-    pub async fn get_tickers(&mut self) -> &mut Self {
+    pub async fn get_tickers(&mut self) -> Result<&mut Self> {
         for t in self.tokens.iter_mut() {
             let query = format!(
-                "select last,sodutc0,volccy24h, high24h, low24h from tickers WHERE instid='{}' order by ts desc limit 1;",
+                "select last,sodutc0,volccy24h, high24h, low24h from tickers WHERE instid='{}' limit 1;",
                 t.instid,
             );
 
-            if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
+            if let Some(rows) = self.db_session.query(&*query, &[]).await?.rows {
                 for row in rows.into_typed::<(f64, f64, f64, f64, f64)>() {
                     let (last, open24h, volccy24h, high24h, low24h): (f64, f64, f64, f64, f64) =
-                        row.unwrap();
+                        row?;
                     t.vol24h = volccy24h;
                     t.change24h = get_percentage_diff(last, open24h);
                     t.range24h = get_percentage_diff(high24h, low24h);
                 }
             };
         }
-        self
+        Ok(self)
     }
     pub fn update_timeouts(&mut self, mut tokens: Vec<Token>, strategy: &Strategy) -> Vec<Token> {
         self.tokens.iter().for_each(|s| {
@@ -226,7 +228,7 @@ impl App {
                 let last_min = match token.candlesticks.last() {
                     Some(candlestick) if candlestick.ts.num_minutes() == dt.minute() as i64 => {
                         dt - Duration::seconds(1)
-                    }
+                    },
                     _ => dt.with_second(0).unwrap().with_nanosecond(0).unwrap(),
                 };
 
@@ -377,7 +379,7 @@ impl App {
             response = if self.exchange.enable_trading {
                 match order.clone().response {
                     Some(r) => r.data[0].clone().s_msg,
-                    None => format!("{:?}", order.response)
+                    None => format!("{:?}", order.response),
                 }
             } else {
                 "N/A".to_string()
@@ -476,8 +478,8 @@ impl App {
         let deny_list = self.deny_list.clone();
         self.tokens
             .retain(|t| t.is_valid(&deny_list, strategy, spendable));
-        self.tokens.sort_by(|a, b| {
-            b.change
+        self.tokens.sort_by(|b, a| {
+            b.std_deviation
                 .partial_cmp(&a.change)
                 .expect("unable to compare change")
         });
@@ -502,7 +504,7 @@ impl App {
         self
     }
 
-    pub async fn fetch_tokens(&mut self, timeframe: i64) -> &mut Self {
+    pub async fn fetch_tokens(&mut self, timeframe: i64) -> Result<&mut Self> {
         let xdt = self.time.utc - Duration::minutes(timeframe);
         let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
 
@@ -511,9 +513,9 @@ impl App {
             dt.timestamp_millis()
         );
 
-        if let Some(rows) = self.db_session.query(&*query, &[]).await.unwrap().rows {
+        if let Some(rows) = self.db_session.query(&*query, &[]).await?.rows {
             for row in rows.into_typed::<Candlestick>() {
-                let candle = row.unwrap();
+                let candle = row?;
                 if let Some(token) = self.tokens.iter_mut().find(|t| candle.instid == t.instid) {
                     token.add_or_update_candle(candle);
                 } else {
@@ -524,6 +526,6 @@ impl App {
                 }
             }
         };
-        self
+        Ok(self)
     }
 }

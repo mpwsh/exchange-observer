@@ -1,17 +1,18 @@
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use anyhow::Result;
 use exchange_observer::{models::*, AppConfig};
 use futures::StreamExt;
 use log::{error, info, warn};
-use scylla::transport::session::Session as DbSession;
-use scylla::SessionBuilder;
-use std::collections::HashMap;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use rskafka::client::ClientBuilder;
+use scylla::{transport::session::Session as DbSession, SessionBuilder};
 use stream_throttle::{ThrottlePool, ThrottleRate, ThrottledStream};
 use tokio::sync::Mutex;
-
-use rskafka::client::ClientBuilder;
 
 pub mod mq;
 
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
                     Err(e) => {
                         info!("Error while reading message: {}", e);
                         return;
-                    }
+                    },
                 };
 
                 let no_data = vec![0u8];
@@ -99,7 +100,7 @@ async fn main() -> Result<()> {
                             if !k.warnings.is_empty() {
                                 warn!("{:?}", k.warnings)
                             }
-                        }
+                        },
                         Err(e) => error!("{}", e),
                     };
                 });

@@ -1,4 +1,5 @@
-use crate::{info, warn, Stats};
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
 use anyhow::Result;
 use exchange_observer::{models::*, AppConfig};
 use rskafka::client::{
@@ -7,22 +8,19 @@ use rskafka::client::{
     Client,
 };
 use scylla::transport::session::Session as DbSession;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Mutex;
+
+use crate::{info, warn, Stats};
 
 pub async fn init_streams(
     client: &Client,
     cfg: &AppConfig,
 ) -> Result<(Vec<StreamConsumer>, Stats)> {
-    //Topic stats
     let mut offset_stats: HashMap<String, (i64, i64)> = HashMap::new();
     //total msg count
     let mut total_msgs = 0;
     let mut streams = Vec::new();
-    for topic in cfg.mq.topics.iter() {
-        //creates a stream per topic partition
+    for topic in cfg.mq.topics.clone().iter_mut() {
         for partition in 0..topic.partitions {
             let partition_client = Arc::new(
                 client

@@ -32,11 +32,11 @@ impl WsSender {
             WsMessage::Binary(data) => {
                 self.ws.set_binary_type(web_sys::BinaryType::Blob);
                 self.ws.send_with_u8_array(&data)
-            }
+            },
             WsMessage::Text(text) => self.ws.send_with_str(&text),
             unknown => {
                 panic!("Don't know how to send message: {:?}", unknown);
-            }
+            },
         };
         if let Err(err) = result.map_err(string_from_js_value) {
             tracing::error!("Failed to send: {:?}", err);
@@ -49,8 +49,7 @@ impl WsSender {
 pub fn ws_connect(url: String, on_event: EventHandler) -> Result<WsSender> {
     // Based on https://rustwasm.github.io/wasm-bindgen/examples/websockets.html
 
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::{closure::Closure, JsCast as _};
 
     // Connect to an server
     let ws = web_sys::WebSocket::new(&url).map_err(string_from_js_value)?;

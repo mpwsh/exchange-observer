@@ -1,7 +1,8 @@
-use super::server::WebSocket;
-use crate::prelude::*;
 use serde_json::json;
 use tokio::sync::mpsc;
+
+use super::server::WebSocket;
+use crate::prelude::*;
 
 pub struct Data {
     pub balance: Balance,

@@ -1,82 +1,96 @@
-use crate::{mq::send_message, Client, RefCell, Result};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+
 use crypto_market_type::MarketType;
 use crypto_markets::fetch_symbols;
-use exchange_observer::{models::*, AppConfig};
-use log::info;
-use native_tls::TlsConnector;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use tokio::{net::TcpStream, task};
-use tokio_tungstenite::{
-    connect_async_tls_with_config, tungstenite::protocol::Message,
-    tungstenite::protocol::WebSocketConfig, Connector, MaybeTlsStream, WebSocketStream,
-};
-
+use exchange_observer::{models::*, ChannelSettings};
 use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
+use log::info;
+use native_tls::TlsConnector;
+use serde_json::{json, Value};
+use tokio::{net::TcpStream, sync::Mutex, task};
+use tokio_tungstenite::{
+    connect_async_tls_with_config,
+    tungstenite::protocol::{Message, WebSocketConfig},
+    Connector, MaybeTlsStream, WebSocketStream,
+};
+
+use crate::{mq::send_message, Client, Result};
 
 //const UPLINK_LIMIT: (NonZeroU32, std::time::Duration) =
 //    (nonzero!(240u32), std::time::Duration::from_secs(3600));
 const WS_FRAME_SIZE: usize = 4096;
-const WEBSOCKET_URL: &str = "wss://ws.okx.com:8443/ws/v5/public";
 
 pub struct WsStream {
     pub read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
 }
 
-pub fn build_args(channels: Vec<String>, pairs: Vec<String>) -> Vec<SubArg> {
-    let mut args: Vec<SubArg> = Vec::new();
-    for channel in channels.iter() {
-        for i in pairs.iter() {
-            let arg = SubArg {
+pub fn build_args(channel: Channel, pairs: &[String]) -> Vec<SubscribeArg> {
+    let mut args: Vec<SubscribeArg> = Vec::new();
+    for i in pairs.iter() {
+        let arg = match channel {
+            Channel::Tickers | Channel::Candle1m => SubscribeArg {
                 channel: channel.to_string(),
-                inst_type: "SPOT".to_string(),
+                inst_type: Some("SPOT".to_string()),
                 inst_id: Some(i.to_string()),
-            };
-            args.push(arg);
-        }
+            },
+            Channel::Trades | Channel::Books => SubscribeArg {
+                channel: channel.to_string(),
+                inst_type: None,
+                inst_id: Some(i.to_string()),
+            },
+        };
+        args.push(arg);
     }
     args
 }
 
-pub async fn connect_and_subscribe(cfg: &AppConfig) -> Result<WsStream> {
-    //Websocket
+pub async fn connect_and_subscribe(channel: ChannelSettings) -> Result<WsStream> {
     let ws_config = WebSocketConfig {
         max_frame_size: Some(WS_FRAME_SIZE),
         ..Default::default()
     };
-    let url = url::Url::parse(WEBSOCKET_URL)?;
-    info!("Retrieving websocket data from: {}", url);
+
+    let url = url::Url::parse(&channel.endpoint)?;
+
     let (ws_stream, _response) = connect_async_tls_with_config(
-        url,
+        &url,
         Some(ws_config),
         Some(Connector::NativeTls(TlsConnector::new()?)),
     )
     .await?;
-    info!("WebSocket handshake has been successfully completed");
 
     let (mut write, read) = ws_stream.split();
 
-    //send subscribe msg to exchange
-    let topic_names: Vec<String> = cfg.mq.topics.clone().into_iter().map(|t| t.name).collect();
-    let subscribe_msg = task::spawn_blocking(move || build_subscribe(topic_names)).await?;
-    write.send(Message::Text(subscribe_msg? + "\n")).await?;
+    let subscribe_msgs =
+        task::spawn_blocking(move || build_subscribe(channel.name.clone())).await??;
+    for msg in subscribe_msgs {
+        info!(
+            "Sending subscription to channel {} on endpoint {}",
+            msg.args[0].channel, url,
+        );
+        let msg_cr = serde_json::to_string(&msg)? + "\n";
+        write.send(Message::Text(msg_cr)).await?;
+    }
 
-    info!("sent subscription");
     Ok(WsStream { read, write })
 }
 
-pub fn build_subscribe(channels: Vec<String>) -> Result<String> {
+pub fn build_subscribe(channel: String) -> Result<Vec<SubscribeMsg>> {
+    let mut msgs = Vec::new();
     let symbols = parse_symbols(fetch_symbols("okx", MarketType::Spot)?);
-    let args_ws = build_args(channels, symbols);
+    let channel = Channel::from_str(&channel).unwrap();
+    info!("Building subscribe for channel {:?}", channel);
+    let args_ws = build_args(channel, &symbols);
     let subscribe_msg = SubscribeMsg {
         op: String::from("subscribe"),
         args: args_ws,
     };
-    Ok(serde_json::to_string(&subscribe_msg)?)
+    msgs.push(subscribe_msg);
+    Ok(msgs)
 }
 
 fn parse_symbols(mut pairs: Vec<String>) -> Vec<String> {
@@ -91,8 +105,8 @@ fn parse_symbols(mut pairs: Vec<String>) -> Vec<String> {
 
 pub async fn process_message(
     exchange: &str,
-    partition_count: &RefCell<HashMap<String, i32>>,
-    client: &Client,
+    partition_count: &Mutex<HashMap<String, i32>>,
+    client: Arc<Client>,
     res: &Value,
 ) -> Result<()> {
     let msg_str =
@@ -102,47 +116,59 @@ pub async fn process_message(
     };
     let inst_id = res["arg"]["instId"].clone();
     let inst_id_bytes = format!("{}", inst_id).replace('\"', "").as_bytes().to_vec();
-    if res["data"] != json!(null) {
-        match res["arg"]["channel"].as_str() {
-            Some("tickers") => {
-                send_message(
-                    exchange,
-                    "tickers",
-                    res,
-                    partition_count,
-                    client,
-                    inst_id_bytes,
-                )
-                .await
-            }
-            Some("trades") => {
-                send_message(
-                    exchange,
-                    "trades",
-                    res,
-                    partition_count,
-                    client,
-                    inst_id_bytes,
-                )
-                .await
-            }
-            Some("candle1m") => {
-                send_message(
-                    exchange,
-                    "candle1m",
-                    res,
-                    partition_count,
-                    client,
-                    inst_id_bytes,
-                )
-                .await
-            }
-            _ => {
-                info!("{:?}", &res["data"].to_string());
-                info!("Nothing to do");
-                Ok(())
-            }
-        }?;
-    };
+    let chan = Channel::from_str(res["arg"]["channel"].as_str().unwrap_or_default());
+
+    if let Ok(channel) = chan {
+        if res["data"] != json!(null) {
+            match channel {
+                Channel::Tickers => {
+                    send_message(
+                        exchange,
+                        channel,
+                        res,
+                        partition_count,
+                        client,
+                        inst_id_bytes,
+                    )
+                    .await
+                },
+                Channel::Trades => {
+                    send_message(
+                        exchange,
+                        channel,
+                        res,
+                        partition_count,
+                        client,
+                        inst_id_bytes,
+                    )
+                    .await
+                },
+                Channel::Books => {
+                    send_message(
+                        exchange,
+                        channel,
+                        res,
+                        partition_count,
+                        client,
+                        inst_id_bytes,
+                    )
+                    .await
+                },
+                Channel::Candle1m => {
+                    send_message(
+                        exchange,
+                        channel,
+                        res,
+                        partition_count,
+                        client,
+                        inst_id_bytes,
+                    )
+                    .await
+                },
+            }?;
+        };
+    } else {
+        info!("Nothing to do with channel: {chan:?}");
+    }
     Ok(())
 }

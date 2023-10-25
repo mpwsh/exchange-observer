@@ -60,13 +60,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.time.now = time::Instant::now();
 
         //Retrieve and process top tokens
-        app.fetch_tokens(cfg.strategy.timeframe).await;
+        app.fetch_tokens(cfg.strategy.timeframe).await?;
         app.tokens = app
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await?;
 
         app.filter_invalid(&cfg.strategy, account.balance.spendable);
-        app.clean_top(cfg.strategy.top).get_tickers().await;
+        app.clean_top(cfg.strategy.top).get_tickers().await?;
 
         //update timers in portfolio tokens
         account = app.buy_tokens(account, &cfg.strategy).await?;
@@ -79,12 +79,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .update_candles(cfg.strategy.timeframe, account.portfolio)
             .await?;
 
-        //update reports
+        //update portfolio
         for token in account.portfolio.iter_mut() {
             token
                 .update_reports(cfg.strategy.timeout)
                 .update_orders(app.exchange.enable_trading, &app.exchange.authentication)
-                .await?;
+                .await?
+                .tag_invalid(&app.tokens, &cfg.strategy)?;
         }
 
         account.balance.set_current(0.0);
@@ -93,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await?
             .calculate_earnings();
 
-        account = app.tag_invalid_tokens(account, &cfg.strategy)?;
+        //account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;
         account.clean_portfolio();
 

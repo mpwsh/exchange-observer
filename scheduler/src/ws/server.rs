@@ -1,9 +1,11 @@
+use std::{net::SocketAddr, sync::Arc};
+
 use futures_util::{SinkExt, StreamExt};
 use log::*;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
+};
 use tokio_tungstenite::{
     accept_async,
     tungstenite::{Error, Message, Result},
@@ -78,7 +80,7 @@ impl WebSocket {
                     Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
                     Error::Io(ref err)
                         if err.kind() == std::io::ErrorKind::ConnectionReset
-                            || err.kind() == std::io::ErrorKind::BrokenPipe => {}
+                            || err.kind() == std::io::ErrorKind::BrokenPipe => {},
                     _ => error!("Error sending message: {}", e),
                 }
             }

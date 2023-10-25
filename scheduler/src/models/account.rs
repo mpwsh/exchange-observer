@@ -1,5 +1,6 @@
-use crate::prelude::*;
 use exchange_observer::{Authentication, Strategy};
+
+use crate::prelude::*;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct Account {
@@ -72,7 +73,7 @@ impl Account {
                                 t.instid
                             ));
                             continue;
-                        }
+                        },
                     };
 
                     //calculate fees based on the order
@@ -86,19 +87,19 @@ impl Account {
                             Side::Buy => {
                                 self.balance.available -= self.balance.spendable;
                                 open_order_value += self.balance.spendable;
-                            }
+                            },
                             Side::Sell => {
                                 t.balance.available -= size;
                                 open_order_value += usdt_order_amount;
-                            }
+                            },
                         },
                         OrderState::Cancelled => match order.side {
                             Side::Buy => {
                                 self.balance.available += self.balance.spendable;
-                            }
+                            },
                             Side::Sell => {
                                 t.balance.available += size;
-                            }
+                            },
                         },
                         OrderState::Failed => match order.side {
                             Side::Buy => (),
@@ -111,7 +112,7 @@ impl Account {
                                     .await
                                     .unwrap_or_default();
                                 }
-                            }
+                            },
                         },
                         OrderState::Filled => {
                             match order.side {
@@ -132,18 +133,18 @@ impl Account {
                                         t.balance.available = token_balance_after_fees;
                                         t.balance.current = token_balance_after_fees;
                                     }
-                                }
+                                },
                                 Side::Sell => {
                                     t.balance.current -= size;
                                     self.balance.available += token_balance_after_fees * price;
                                     app.logs.push(t.report.to_string());
-                                }
+                                },
                             }
                             self.trades += 1;
                             self.fee_spend += usdt_taker_fee;
                             t.buy_ts = Duration::milliseconds(Utc::now().timestamp_millis());
-                        }
-                        _ => {}
+                        },
+                        _ => {},
                     };
                     //log the order
                     if order.prev_state != OrderState::Created {

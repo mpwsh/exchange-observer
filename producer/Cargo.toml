@@ -1,8 +1,9 @@
 [package]
 name = "producer"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["mpw <x@mpw.sh>"]
+resolver = "2"
 
 [dependencies]
 exchange-observer = {path = "../lib", version = "0.1.0"}
