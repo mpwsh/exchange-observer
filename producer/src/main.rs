@@ -77,6 +77,7 @@ async fn handle_connection(
         match ws::connect_and_subscribe(channel.clone()).await {
             Ok(ws_stream) => {
                 if run(client.clone(), ws_stream, &cfg).await.is_err() {
+                    warn!("channel {} Disconnected", channel.name.to_string());
                     break;
                 }
             },
