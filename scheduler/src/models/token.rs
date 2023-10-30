@@ -235,6 +235,22 @@ impl Token {
 
         Ok(self)
     }
+    pub fn tag_invalid(
+        &mut self,
+        //mut account: Account,
+        tokens: &[Token],
+        strategy: &Strategy,
+    ) -> Result<&mut Self> {
+        let found = tokens.iter().any(|t| self.instid == t.instid);
+        if self.status == token::Status::Trading {
+            self.exit_reason = self.get_exit_reason(strategy, found);
+        }
+        if let Some(reason) = &self.exit_reason {
+            self.status = token::Status::Selling;
+            self.report.reason = reason.to_string();
+        }
+        Ok(self)
+    }
 
     pub async fn sell(
         &mut self,
@@ -313,6 +329,8 @@ impl Token {
             .count();
 
         // Take the last 5 candlesticks (or fewer if there are not enough)
+
+        /*
         let last_candles_change: Vec<_> = self
             .candlesticks
             .iter()
@@ -321,9 +339,10 @@ impl Token {
             .filter(|&c| c.change == 0.0)
             .collect::<Vec<&Candlestick>>();
 
+
         if last_candles_change.len() >= (strategy.timeframe / 2) as usize {
             return Some(ExitReason::LowChange);
-        }
+        }*/
 
         if self.timeout.num_seconds() <= 0 {
             return Some(ExitReason::Timeout);
@@ -359,10 +378,9 @@ impl Token {
         let mut results_count = 0;
 
         let query = format!(
-                "select count(instid) from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-                self.instid,
-                &strategy.hash
-                );
+            "select count(instid) from okx.reports where instid='{}' and strategy='{}' allow filtering;",
+            self.instid, &strategy.hash
+        );
 
         if let Some(rows) = db_session.query(&*query, &[]).await.unwrap().rows {
             for row in rows.into_typed::<(i64,)>() {
@@ -373,9 +391,8 @@ impl Token {
         if results_count >= 1 {
             let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-                self.instid,
-                strategy.hash,
-                );
+                self.instid, strategy.hash,
+            );
             if let Some(rows) = db_session.query(&*query, &[]).await.unwrap().rows {
                 for row in rows.into_typed::<(f32, i64)>() {
                     let (highest, highest_elapsed): (f32, i64) = row.unwrap();
@@ -464,7 +481,7 @@ impl Token {
     }
 
     pub fn update_reports(&mut self, timeout: i64) -> &mut Self {
-        let mut t = self;
+        let t = self;
         t.report.time_left = t.timeout.num_seconds();
         t.change = get_percentage_diff(t.price, t.buy_price);
         if t.change >= t.report.highest {
@@ -501,8 +518,7 @@ impl Token {
                         order.state = got_state.clone();
                     }
                 } else {
-                    use rand::thread_rng;
-                    use rand::Rng;
+                    use rand::{thread_rng, Rng};
                     let mut rng = thread_rng();
                     let random_state = if rng.gen_bool(1.0 / 6.0) {
                         OrderState::Filled

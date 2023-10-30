@@ -1,11 +1,11 @@
+use std::{env, net::Ipv4Addr};
+
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use hmac::{Hmac, Mac};
 use log::debug;
 use serde_derive::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::env;
-use std::net::Ipv4Addr;
 use thiserror::Error;
 pub use time::{error::Format, format_description::well_known::Rfc3339, OffsetDateTime};
 pub mod models;
@@ -69,7 +69,15 @@ pub struct Exchange {
     pub taker_fee: f64,
     pub maker_fee: f64,
     pub order_ttl: u32,
+    pub channels: Vec<ChannelSettings>,
 }
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChannelSettings {
+    pub name: String,
+    pub topic: String,
+    pub endpoint: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Authentication {
     pub access_key: String,
@@ -233,6 +241,7 @@ impl Default for Exchange {
             enable_trading: false,
             authentication: Authentication::default(),
             taker_fee: 0.1,
+            channels: Vec::new(),
             maker_fee: 0.08,
             order_ttl: 60,
         }

@@ -27,7 +27,7 @@ pub fn std_deviation(data: &[f32]) -> Option<f32> {
                 / count as f32;
 
             Some(variance.sqrt())
-        }
+        },
         _ => None,
     }
 }

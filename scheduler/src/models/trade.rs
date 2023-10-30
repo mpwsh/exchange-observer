@@ -1,5 +1,6 @@
-use crate::prelude::*;
 use serde::Serializer;
+
+use crate::prelude::*;
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename(serialize = "snake_case", deserialize = "camelCase"))]
 pub struct Order {
@@ -203,11 +204,11 @@ impl Order {
                     Ok(res) => {
                         self.response = Some(res.clone());
                         self.id = res.data[0].ord_id.clone();
-                    }
+                    },
                     Err(e) => {
                         self.response = None;
                         log::error!("{:?}", e);
-                    }
+                    },
                 };
             } else {
                 let body = res.text().await?;

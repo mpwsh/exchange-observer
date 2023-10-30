@@ -1,7 +1,6 @@
+use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, *};
+
 use crate::prelude::*;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
-use comfy_table::*;
 
 const TABLE_WIDTH: u16 = 300;
 pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Table>> {
@@ -32,9 +31,11 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             ]);
         //print token rows
         for t in app.tokens.iter() {
-            let mut token_row: Vec<Cell> = vec![Cell::new(t.instid.replace("-USDT", ""))
-                .set_alignment(CellAlignment::Center)
-                .fg(Color::White)];
+            let mut token_row: Vec<Cell> = vec![
+                Cell::new(t.instid.replace("-USDT", ""))
+                    .set_alignment(CellAlignment::Center)
+                    .fg(Color::White),
+            ];
 
             let candle_list = show_candles(t.candlesticks.clone());
             token_row.push(

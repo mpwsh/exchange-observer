@@ -26,7 +26,7 @@ async fn ws_connect_async(
         Err(err) => {
             on_event(WsEvent::Error(err.to_string()));
             return;
-        }
+        },
     };
 
     tracing::info!("WebSocket handshake has been successfully completed");
@@ -50,24 +50,24 @@ async fn ws_connect_async(
             Ok(message) => match message {
                 tungstenite::protocol::Message::Text(text) => {
                     on_event(WsEvent::Message(WsMessage::Text(text)));
-                }
+                },
                 tungstenite::protocol::Message::Binary(data) => {
                     on_event(WsEvent::Message(WsMessage::Binary(data)));
-                }
+                },
                 tungstenite::protocol::Message::Ping(data) => {
                     on_event(WsEvent::Message(WsMessage::Ping(data)));
-                }
+                },
                 tungstenite::protocol::Message::Pong(data) => {
                     on_event(WsEvent::Message(WsMessage::Pong(data)));
-                }
+                },
                 tungstenite::protocol::Message::Close(_) => {
                     on_event(WsEvent::Closed);
-                }
-                tungstenite::protocol::Message::Frame(_) => {}
+                },
+                tungstenite::protocol::Message::Frame(_) => {},
             },
             Err(err) => {
                 on_event(WsEvent::Error(err.to_string()));
-            }
+            },
         };
         async {}
     });

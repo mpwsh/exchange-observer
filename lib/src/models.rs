@@ -1,14 +1,15 @@
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::str::FromStr;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Channel {
     Tickers,
     Candle1m,
     Trades,
+    Books,
 }
 
 impl ToString for Channel {
@@ -17,6 +18,7 @@ impl ToString for Channel {
             Self::Tickers => "tickers".to_string(),
             Self::Candle1m => "candle1m".to_string(),
             Self::Trades => "trades".to_string(),
+            Self::Books => "books".to_string(),
         }
     }
 }
@@ -29,6 +31,7 @@ impl FromStr for Channel {
             "tickers" => Ok(Channel::Tickers),
             "candle1m" => Ok(Channel::Candle1m),
             "trades" => Ok(Channel::Trades),
+            "books" => Ok(Channel::Books),
             _ => Err(()),
         }
     }
@@ -36,12 +39,12 @@ impl FromStr for Channel {
 
 impl Channel {
     pub fn parse(&self, data: &[u8], inst_id: &str) -> Result<String> {
-        // Collect offers into a vec
         let json = match self {
             Self::Tickers => serde_json::from_slice::<Ticker>(data)?.build_query(inst_id),
             Self::Candle1m => serde_json::from_slice::<Candlestick>(data)?.build_query(inst_id),
 
             Self::Trades => serde_json::from_slice::<Trade>(data)?.build_query(inst_id),
+            Self::Books => serde_json::from_slice::<Book>(data)?.build_query(inst_id),
         };
         Ok(json.to_string())
     }
@@ -106,6 +109,31 @@ impl Trade {
         "side": self.side,
         "sz": self.sz,
         "tradeid": self.trade_id,
+        "ts": self.ts,
+        })
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Book {
+    pub asks: Vec<Vec<String>>,
+    pub bids: Vec<Vec<String>>,
+    pub checksum: Option<i64>,
+    pub prev_seq_id: Option<i64>,
+    pub seq_id: i64,
+    pub ts: String,
+}
+
+impl Book {
+    pub fn build_query(self, inst_id: &str) -> Value {
+        json!({
+        "instid": inst_id,
+        "asks": self.asks,
+        "bids": self.bids,
+        "checksum": self.checksum,
+        "prev_seq_id": self.prev_seq_id,
+        "seq_id": self.seq_id,
         "ts": self.ts,
         })
     }
@@ -185,22 +213,23 @@ impl Candlestick {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Debug, Deserialize)]
 pub struct SubscribeMsg {
     pub op: String,
-    pub args: Vec<SubArg>,
+    pub args: Vec<SubscribeArg>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct WsResponse {
     pub event: String,
-    pub arg: SubArg,
+    pub arg: SubscribeArg,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubArg {
+pub struct SubscribeArg {
     pub channel: String,
-    pub inst_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_type: Option<String>,
     pub inst_id: Option<String>,
 }

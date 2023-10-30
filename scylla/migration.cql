@@ -9,7 +9,26 @@ CREATE TABLE IF NOT EXISTS trades (
   side text,
   ts timestamp,
   primary key (instid, ts, tradeid))
-WITH default_time_to_live = 2592000
+WITH default_time_to_live = 86400
+AND CLUSTERING ORDER BY (ts desc)
+AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
+
+CREATE TYPE IF NOT EXISTS order_entry (
+    price float,
+    quantity int,
+    deprecated int,
+    num_orders int
+);
+
+CREATE TABLE IF NOT EXISTS books (
+  instid text,
+  asks list<frozen<order_entry>>,
+  bids list<frozen<order_entry>>,
+  checksum int,
+  prev_seq_id int,
+  seq_id int,
+  ts timestamp,primary key (instid, ts, seq_id))
+WITH default_time_to_live = 86400
 AND CLUSTERING ORDER BY (ts desc)
 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
 
@@ -30,7 +49,7 @@ CREATE TABLE IF NOT EXISTS tickers (
   sodutc8 double,
   ts timestamp,
   primary key (instid, ts, last))
-WITH default_time_to_live = 2592000
+WITH default_time_to_live = 86400
 AND CLUSTERING ORDER BY (ts desc)
 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
 
@@ -45,7 +64,7 @@ CREATE TABLE IF NOT EXISTS candle1m (
   range float,
   ts timestamp,
   primary key (instid, ts))
-WITH default_time_to_live = 2592000
+WITH default_time_to_live = 86400
 AND CLUSTERING ORDER BY (ts desc)
 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
 

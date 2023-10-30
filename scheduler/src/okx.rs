@@ -1,6 +1,7 @@
-use crate::BASE_URL;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+
+use crate::BASE_URL;
 
 pub type OkxAccountBalanceResponse = OkxApiResponse<OkxAccountBalance>;
 pub type OkxOrderResponse = OkxApiResponse<OkxOrder>;

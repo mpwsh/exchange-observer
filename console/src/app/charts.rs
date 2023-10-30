@@ -1,9 +1,10 @@
-use super::Duration;
-use crate::app::{Account, Candlestick};
 use eframe::egui::{
     plot::{BoxElem, BoxSpread},
     Color32, Stroke,
 };
+
+use super::Duration;
+use crate::app::{Account, Candlestick};
 
 pub struct CandlestickBoxPlot {
     pub boxes: Vec<BoxElem>,

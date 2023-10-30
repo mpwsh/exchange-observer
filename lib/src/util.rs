@@ -1,5 +1,7 @@
-use std::fmt;
-use std::time::{Duration, Instant};
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
 pub struct Elapsed(Duration);
 impl Elapsed {
     pub fn from(start: &Instant) -> Self {

@@ -1,30 +1,31 @@
-use crate::{error, info, warn, RefCell, Result, Value};
+use std::collections::{BTreeMap, HashMap};
+
 use exchange_observer::{models::*, AppConfig};
 use rskafka::{
     client::{partition::Compression, Client},
     record::Record,
-    //record::RecordAndOffset,
-    topic::Topic,
 };
-
-use std::collections::{BTreeMap, HashMap};
 use time::OffsetDateTime;
 
-pub async fn produce(topic: &str, partition: i32, client: &Client, record: Record) -> Result<()> {
-    let partition_client = client
-        .partition_client(topic.to_owned(), partition)
-        .unwrap();
+use crate::{info, warn, Arc, Mutex, Result, Value};
+
+pub async fn produce(
+    topic: Channel,
+    partition: i32,
+    client: Arc<Client>,
+    record: Record,
+) -> Result<()> {
+    let partition_client = client.partition_client(topic.to_string(), partition)?;
     partition_client
         .produce(vec![record], Compression::Lz4)
-        .await
-        .unwrap();
+        .await?;
 
     Ok(())
 }
 
 pub fn build_record(
     exchange: &str,
-    channel: &str,
+    channel: Channel,
     inst_id: &[u8],
     data: &str,
     partition: String,
@@ -34,7 +35,10 @@ pub fn build_record(
         value: Some(data.as_bytes().to_vec()),
         headers: BTreeMap::from([
             ("Exchange".to_owned(), exchange.as_bytes().to_vec()),
-            ("Channel".to_owned(), channel.as_bytes().to_vec()),
+            (
+                "Channel".to_owned(),
+                channel.to_string().as_bytes().to_vec(),
+            ),
             ("Partition".to_owned(), partition.as_bytes().to_vec()),
         ]),
         timestamp: OffsetDateTime::now_utc(),
@@ -42,23 +46,19 @@ pub fn build_record(
 }
 
 pub async fn create_topics(client: &Client, cfg: &AppConfig) -> Result<()> {
-    let list_topics = client.list_topics().await?;
-    info!("found topics: {:?}", list_topics);
-    for topic in cfg.mq.topics.iter() {
-        let found: Option<&Topic> = list_topics.iter().find(|t| t.name == *topic.name);
-        if found.is_none() {
-            warn!("Topic {} doesn't exist. Creating with {} partitions, timeout {}ms, replication_factor: {}", topic.name, topic.partitions, topic.max_wait_ms, topic.replication_factor);
+    let list = client.list_topics().await?;
+    info!("Topic list: {:?}", list);
+    for t in cfg.mq.topics.iter() {
+        if !list.iter().any(|lt| lt.name == *t.name) {
+            warn!(
+                "Topic {} doesn't exist. Creating with {} partitions, timeout {}ms, replication_factor: {}",
+                t.name, t.partitions, t.max_wait_ms, t.replication_factor
+            );
             //create topic
-            let controller_client = client.controller_client().unwrap();
+            let controller_client = client.controller_client()?;
             controller_client
-                .create_topic(
-                    &topic.name,
-                    topic.partitions,
-                    topic.replication_factor,
-                    topic.max_wait_ms,
-                )
-                .await
-                .unwrap()
+                .create_topic(&t.name, t.partitions, t.replication_factor, t.max_wait_ms)
+                .await?
         }
     }
     Ok(())
@@ -66,30 +66,29 @@ pub async fn create_topics(client: &Client, cfg: &AppConfig) -> Result<()> {
 
 pub async fn send_message(
     exchange: &str,
-    channel: &str,
+    channel: Channel,
     data: &Value,
-    partition_count: &RefCell<HashMap<String, i32>>,
-    client: &Client,
+    partition_count: &Mutex<HashMap<String, i32>>,
+    client: Arc<Client>,
     inst_id_bytes: Vec<u8>,
 ) -> Result<()> {
     let data = match channel {
-        "tickers" => serde_json::to_string(&serde_json::from_str::<Ticker>(
+        Channel::Tickers => serde_json::to_string(&serde_json::from_str::<Ticker>(
             &data["data"][0].to_string(),
         )?)?,
-        "trades" => serde_json::to_string(&serde_json::from_str::<Trade>(
+        Channel::Trades => serde_json::to_string(&serde_json::from_str::<Trade>(
             &data["data"][0].to_string(),
         )?)?,
-        "candle1m" => {
+        Channel::Books => {
+            serde_json::to_string(&serde_json::from_str::<Book>(&data["data"][0].to_string())?)?
+        },
+        Channel::Candle1m => {
             serde_json::to_string(&Candlestick::from_candle(data).get_change().get_range())?
-        }
-        _ => {
-            error!("Unknown channel received: {}", channel);
-            String::new()
-        }
+        },
     };
 
     let p = {
-        let map = partition_count.borrow();
+        let map = partition_count.lock().await;
         *map.get(&channel.to_string()).unwrap()
     };
 
