@@ -1,8 +1,8 @@
-use std::str::FromStr;
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Channel {
@@ -12,14 +12,15 @@ pub enum Channel {
     Books,
 }
 
-impl ToString for Channel {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Tickers => "tickers".to_string(),
-            Self::Candle1m => "candle1m".to_string(),
-            Self::Trades => "trades".to_string(),
-            Self::Books => "books".to_string(),
-        }
+impl Display for Channel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Tickers => "tickers",
+            Self::Candle1m => "candle1m",
+            Self::Trades => "trades",
+            Self::Books => "books",
+        };
+        write!(f, "{}", s)
     }
 }
 

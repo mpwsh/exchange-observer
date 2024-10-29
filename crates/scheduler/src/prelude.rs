@@ -1,7 +1,9 @@
 pub use std::{error::Error, str::FromStr, time};
 
 pub use anyhow::Result;
-pub use chrono::{DateTime, Duration, NaiveDateTime, SecondsFormat, TimeZone, Timelike, Utc};
+pub use chrono::{
+    DateTime, Duration, NaiveDateTime, SecondsFormat, TimeDelta, TimeZone, Timelike, Utc,
+};
 pub use exchange_observer::{
     AppConfig, Authentication, Exchange, OffsetDateTime, Pushover, Strategy,
 };

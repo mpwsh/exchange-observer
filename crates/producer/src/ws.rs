@@ -17,7 +17,10 @@ use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream,
 };
 
-use crate::{mq::send_message, Client, Result};
+use crate::{
+    mq::{send_message, Clients},
+    Result,
+};
 
 //const UPLINK_LIMIT: (NonZeroU32, std::time::Duration) =
 //    (nonzero!(240u32), std::time::Duration::from_secs(3600));
@@ -59,6 +62,7 @@ pub async fn connect_and_subscribe(channel: ChannelSettings) -> Result<WsStream>
     let (ws_stream, _response) = connect_async_tls_with_config(
         &url,
         Some(ws_config),
+        false,
         Some(Connector::NativeTls(TlsConnector::new()?)),
     )
     .await?;
@@ -106,7 +110,7 @@ fn parse_symbols(mut pairs: Vec<String>) -> Vec<String> {
 pub async fn process_message(
     exchange: &str,
     partition_count: &Mutex<HashMap<String, i32>>,
-    client: Arc<Client>,
+    clients: Arc<Clients>,
     res: &Value,
 ) -> Result<()> {
     let msg_str =
@@ -127,7 +131,7 @@ pub async fn process_message(
                         channel,
                         res,
                         partition_count,
-                        client,
+                        clients,
                         inst_id_bytes,
                     )
                     .await
@@ -138,7 +142,7 @@ pub async fn process_message(
                         channel,
                         res,
                         partition_count,
-                        client,
+                        clients,
                         inst_id_bytes,
                     )
                     .await
@@ -149,7 +153,7 @@ pub async fn process_message(
                         channel,
                         res,
                         partition_count,
-                        client,
+                        clients,
                         inst_id_bytes,
                     )
                     .await
@@ -160,7 +164,7 @@ pub async fn process_message(
                         channel,
                         res,
                         partition_count,
-                        client,
+                        clients,
                         inst_id_bytes,
                     )
                     .await

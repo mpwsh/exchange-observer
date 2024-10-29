@@ -222,7 +222,7 @@ impl Order {
         let payload = serde_json::to_string_pretty(&self).unwrap();
         let payload = payload.replace("null", "0");
         let query = format!("INSERT INTO okx.orders JSON '{}'", payload);
-        Ok(db_session.query(&*query, &[]).await?)
+        Ok(db_session.query_unpaged(&*query, &[]).await?)
     }
 }
 

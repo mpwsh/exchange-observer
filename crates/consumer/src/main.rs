@@ -40,10 +40,7 @@ async fn main() -> Result<()> {
 
     //Check for Schema Agreement
     info!("Waiting for schema agreement for 5 seconds...");
-    match session
-        .await_timed_schema_agreement(Duration::from_secs(5))
-        .await
-    {
+    match session.await_schema_agreement().await {
         Ok(_) => info!("Schema is in agreement - Proceeding"),
         Err(e) => error!("Error while retrieving schema agrement. Error: {e}"),
     };
@@ -95,7 +92,7 @@ async fn main() -> Result<()> {
                     .await
                     .unwrap();
                 tokio::task::spawn(async move {
-                    match session.query(query.clone(), &[]).await {
+                    match session.query_unpaged(query.clone(), &[]).await {
                         Ok(k) => {
                             if !k.warnings.is_empty() {
                                 warn!("{:?}", k.warnings)

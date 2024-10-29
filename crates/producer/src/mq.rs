@@ -2,20 +2,62 @@ use std::collections::{BTreeMap, HashMap};
 
 use exchange_observer::{models::*, AppConfig};
 use rskafka::{
-    client::{partition::Compression, Client},
+    chrono::Utc,
+    client::{
+        partition::{Compression, PartitionClient, UnknownTopicHandling},
+        Client,
+    },
     record::Record,
 };
-use time::OffsetDateTime;
-
+//use time::OffsetDateTime;
 use crate::{info, warn, Arc, Mutex, Result, Value};
+
+#[allow(clippy::type_complexity)]
+pub struct Clients {
+    pub partitions: Arc<Mutex<HashMap<(String, i32), Arc<PartitionClient>>>>,
+    pub admin: Arc<Client>,
+}
+
+impl Clients {
+    pub fn new(admin: Arc<Client>) -> Self {
+        Clients {
+            partitions: Arc::new(Mutex::new(HashMap::new())),
+            admin,
+        }
+    }
+
+    pub async fn get_partition_client(
+        &self,
+        topic: &str,
+        partition: i32,
+    ) -> Result<Arc<PartitionClient>> {
+        let key = (topic.to_string(), partition);
+        let mut clients = self.partitions.lock().await;
+
+        match clients.get(&key) {
+            Some(client) => Ok(client.clone()),
+            None => {
+                let partition_client = self
+                    .admin
+                    .partition_client(topic, partition, UnknownTopicHandling::Error)
+                    .await?;
+                let partition_client = Arc::new(partition_client);
+                clients.insert(key, partition_client.clone());
+                Ok(partition_client)
+            },
+        }
+    }
+}
 
 pub async fn produce(
     topic: Channel,
     partition: i32,
-    client: Arc<Client>,
+    clients: Arc<Clients>,
     record: Record,
 ) -> Result<()> {
-    let partition_client = client.partition_client(topic.to_string(), partition)?;
+    let partition_client = clients
+        .get_partition_client(&topic.to_string(), partition)
+        .await?;
     partition_client
         .produce(vec![record], Compression::Lz4)
         .await?;
@@ -41,7 +83,7 @@ pub fn build_record(
             ),
             ("Partition".to_owned(), partition.as_bytes().to_vec()),
         ]),
-        timestamp: OffsetDateTime::now_utc(),
+        timestamp: Utc::now(),
     }
 }
 
@@ -69,7 +111,7 @@ pub async fn send_message(
     channel: Channel,
     data: &Value,
     partition_count: &Mutex<HashMap<String, i32>>,
-    client: Arc<Client>,
+    clients: Arc<Clients>,
     inst_id_bytes: Vec<u8>,
 ) -> Result<()> {
     let data = match channel {
@@ -94,7 +136,7 @@ pub async fn send_message(
 
     //Save the partition in a header (dont know how to retrieve afterwards without this)
     let record = build_record(exchange, channel, &inst_id_bytes, &data, p.to_string());
-    produce(channel, p, client, record)
+    produce(channel, p, clients, record)
         .await
         .expect("failed to produce message");
     Ok(())

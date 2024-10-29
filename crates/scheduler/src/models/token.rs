@@ -60,12 +60,10 @@ pub struct Token {
     pub report: Report,
 }
 
-#[serde_with::serde_as]
 #[derive(FromRow, Serialize, Deserialize, Debug, Clone)]
 pub struct Candlestick {
     pub instid: String,
-    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
-    pub ts: Duration,
+    pub ts: DateTime<Utc>,
     pub change: f32,
     pub close: f64,
     pub high: f64,
@@ -84,14 +82,11 @@ impl Candlestick {
     pub fn new(open: f64) -> Self {
         Self {
             instid: String::new(),
-            ts: Duration::milliseconds(
-                Utc::now()
-                    .with_second(0)
-                    .unwrap()
-                    .with_nanosecond(0)
-                    .unwrap()
-                    .timestamp_millis(),
-            ),
+            ts: Utc::now()
+                .with_second(0)
+                .unwrap()
+                .with_nanosecond(0)
+                .unwrap(),
             change: 0.0,
             close: open,
             high: open,
@@ -101,18 +96,18 @@ impl Candlestick {
             vol: 0.0,
         }
     }
-    pub fn from_tickers(instid: &str, tickers: &[(f64, f64, Duration)]) -> Option<Candlestick> {
+    pub fn from_tickers(
+        instid: &str,
+        tickers: &[(f64, f64, DateTime<Utc>)],
+    ) -> Option<Candlestick> {
         if tickers.is_empty() {
             return None;
         }
-
         let open = tickers.first()?.0;
         let close = tickers.last()?.0;
-
         let mut high = tickers[0].0;
         let mut low = tickers[0].0;
         let mut vol = 0.0;
-
         for &(price, size, _) in tickers {
             high = high.max(price);
             low = low.min(price);
@@ -121,23 +116,15 @@ impl Candlestick {
         let change = get_percentage_diff(close, open);
         let range = get_percentage_diff(high, low);
         let ts = tickers.last()?.2;
-        let datetime =
-            DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp_opt(0, 0)?, Utc) + ts;
-        let time = if datetime.timestamp_millis() == 0 {
+        let time = if ts.timestamp_millis() == 0 {
             Utc::now()
         } else {
-            datetime
+            ts
         };
 
         Some(Candlestick {
             instid: instid.to_string(),
-            ts: Duration::milliseconds(
-                time.with_second(0)
-                    .unwrap()
-                    .with_nanosecond(0)
-                    .unwrap()
-                    .timestamp_millis(),
-            ),
+            ts: time,
             change,
             close,
             high,
@@ -207,7 +194,7 @@ impl Token {
         if let Some(existing_candle) = self
             .candlesticks
             .iter_mut()
-            .find(|c| candle.ts.num_minutes() == c.ts.num_minutes())
+            .find(|c| candle.ts.minute() == c.ts.minute())
         {
             *existing_candle = candle;
         } else {
@@ -382,7 +369,7 @@ impl Token {
             self.instid, &strategy.hash
         );
 
-        if let Some(rows) = db_session.query(&*query, &[]).await.unwrap().rows {
+        if let Some(rows) = db_session.query_unpaged(&*query, &[]).await.unwrap().rows {
             for row in rows.into_typed::<(i64,)>() {
                 let (c,): (i64,) = row.unwrap();
                 results_count = c;
@@ -393,7 +380,7 @@ impl Token {
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 self.instid, strategy.hash,
             );
-            if let Some(rows) = db_session.query(&*query, &[]).await.unwrap().rows {
+            if let Some(rows) = db_session.query_unpaged(&*query, &[]).await.unwrap().rows {
                 for row in rows.into_typed::<(f32, i64)>() {
                     let (highest, highest_elapsed): (f32, i64) = row.unwrap();
                     change_deviation.push(highest);

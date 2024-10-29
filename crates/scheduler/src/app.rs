@@ -102,7 +102,7 @@ impl App {
     pub async fn notify(&self, title: String, msg: String) -> Result<PushoverResponse> {
         let now = self.time.utc.timestamp();
         let message: Message = MessageBuilder::new(&self.pushover.key, &self.pushover.token, &msg)
-            .add_title(&title)
+            .set_title(&title)
             //.add_url("https://pushover.net/", Some("Pushover"))
             .set_priority(-1)
             .set_sound(PushoverSound::GAMELAN)
@@ -119,7 +119,7 @@ impl App {
                 t.instid,
             );
 
-            if let Some(rows) = self.db_session.query(&*query, &[]).await?.rows {
+            if let Some(rows) = self.db_session.query_unpaged(&*query, &[]).await?.rows {
                 for row in rows.into_typed::<(f64, f64, f64, f64, f64)>() {
                     let (last, open24h, volccy24h, high24h, low24h): (f64, f64, f64, f64, f64) =
                         row?;
@@ -161,7 +161,7 @@ impl App {
     pub async fn save_strategy(&self, strategy: &Strategy) -> Result<()> {
         let payload = serde_json::to_string_pretty(&strategy)?;
         let query = format!("INSERT INTO okx.strategies JSON '{}'", payload);
-        self.db_session.query(&*query, &[]).await?;
+        self.db_session.query_unpaged(&*query, &[]).await?;
         Ok(())
     }
 
@@ -182,7 +182,6 @@ impl App {
             .unwrap()
             .with_nanosecond(0)
             .unwrap();
-
         //last -timeframe- candles
         let get_candles_query = self
             .db_session
@@ -211,10 +210,7 @@ impl App {
                 //Get all candles in the selected timeframe
                 if let Some(rows) = self
                     .db_session
-                    .execute(
-                        &get_candle_stmt,
-                        (&token.instid, dt.timestamp_millis(), timeframe as i32),
-                    )
+                    .execute_unpaged(&get_candle_stmt, (&token.instid, dt, timeframe as i32))
                     .await?
                     .rows
                 {
@@ -226,16 +222,16 @@ impl App {
 
                 let dt = self.time.utc;
                 let last_min = match token.candlesticks.last() {
-                    Some(candlestick) if candlestick.ts.num_minutes() == dt.minute() as i64 => {
+                    Some(candlestick) if candlestick.ts.minute() == dt.minute() => {
                         dt - Duration::seconds(1)
                     },
-                    _ => dt.with_second(0).unwrap().with_nanosecond(0).unwrap(),
+                    _ => dt,
                 };
 
                 //Token price
                 token.price = if let Some(rows) = self
                     .db_session
-                    .execute(&get_price_stmt, (&token.instid,))
+                    .execute_unpaged(&get_price_stmt, (&token.instid,))
                     .await?
                     .rows
                 {
@@ -253,15 +249,12 @@ impl App {
                 //Last candle built from last minute of tickers
                 if let Some(rows) = self
                     .db_session
-                    .execute(
-                        &get_ticker_stmt,
-                        (&token.instid, last_min.timestamp_millis()),
-                    )
+                    .execute_unpaged(&get_ticker_stmt, (&token.instid, last_min))
                     .await?
                     .rows
                 {
-                    let tickers: Vec<(f64, f64, Duration)> = rows
-                        .into_typed::<(f64, f64, Duration)>()
+                    let tickers: Vec<(f64, f64, DateTime<Utc>)> = rows
+                        .into_typed::<(f64, f64, DateTime<Utc>)>()
                         .filter_map(Result::ok)
                         .collect();
 
@@ -507,13 +500,12 @@ impl App {
     pub async fn fetch_tokens(&mut self, timeframe: i64) -> Result<&mut Self> {
         let xdt = self.time.utc - Duration::minutes(timeframe);
         let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
-
         let query = format!(
             "SELECT * FROM okx.candle1m WHERE ts >= '{}'",
             dt.timestamp_millis()
         );
 
-        if let Some(rows) = self.db_session.query(&*query, &[]).await?.rows {
+        if let Some(rows) = self.db_session.query_unpaged(&*query, &[]).await?.rows {
             for row in rows.into_typed::<Candlestick>() {
                 let candle = row?;
                 if let Some(token) = self.tokens.iter_mut().find(|t| candle.instid == t.instid) {

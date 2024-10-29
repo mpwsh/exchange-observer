@@ -1,9 +1,30 @@
 [workspace]
 resolver = "2"
 members = [
-    "lib",
-    "producer",
-    "consumer",
-    "scheduler",
-    "console"
+    "crates/*",
 ]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+authors = [ "x@mpw.sh"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.debug-opt]
+inherits = "release"
+debug = 2
+debug-assertions = true
+incremental = true
+
+[profile.deploy]
+inherits = "release"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

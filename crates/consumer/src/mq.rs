@@ -4,7 +4,7 @@ use anyhow::Result;
 use exchange_observer::{models::*, AppConfig};
 use rskafka::client::{
     consumer::{StartOffset, StreamConsumer, StreamConsumerBuilder},
-    partition::OffsetAt,
+    partition::{OffsetAt, UnknownTopicHandling},
     Client,
 };
 use scylla::transport::session::Session as DbSession;
@@ -24,7 +24,7 @@ pub async fn init_streams(
         for partition in 0..topic.partitions {
             let partition_client = Arc::new(
                 client
-                    .partition_client(&topic.name, partition)
+                    .partition_client(&topic.name, partition, UnknownTopicHandling::Error)
                     .await
                     .unwrap_or_else(|_| {
                         panic!(
@@ -116,8 +116,8 @@ pub async fn update_stats(
         );
         info!(
             "Average latency: {} ms | 99.9 latency percentile: {} ms",
-            metrics.get_latency_avg_ms().unwrap(),
-            metrics.get_latency_percentile_ms(99.9).unwrap()
+            metrics.get_latency_avg_ms().unwrap_or(0),
+            metrics.get_latency_percentile_ms(99.9).unwrap_or(0)
         );
         let ack_rate = *stats.inc.lock().await / 5;
         info!("inc rate: {} messages/s (5 sec avg)", ack_rate);

@@ -4,12 +4,13 @@ use anyhow::Result;
 use exchange_observer::{models::Channel, util::Elapsed, AppConfig, ChannelSettings};
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
-use rskafka::client::{Client, ClientBuilder};
+use rskafka::client::ClientBuilder;
 use serde_json::Value;
 pub use stats::*;
 use tokio::sync::{watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
+use crate::mq::Clients;
 use crate::ws::WsStream;
 pub mod mq;
 pub mod stats;
@@ -21,14 +22,15 @@ async fn main() -> Result<()> {
     info!("Connecting to message queue at: {} ...", cfg.mq.ip);
 
     // setup redpanda
-
     let client = Arc::new(
         ClientBuilder::new(vec![format!("{}:{}", cfg.mq.ip, cfg.mq.port)])
             .build()
             .await?,
     );
 
-    mq::create_topics(&client, &cfg).await?;
+    let clients = Arc::new(Clients::new(client));
+
+    mq::create_topics(&clients.admin, &cfg).await?;
 
     let channels = cfg.exchange.as_ref().unwrap().channels.clone();
 
@@ -40,7 +42,7 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
 
         tokio::spawn(handle_connection(
-            client.clone(),
+            clients.clone(),
             channel,
             cfg,
             disconnect_tx,
@@ -57,7 +59,7 @@ async fn main() -> Result<()> {
         let cfg = cfg.clone();
 
         tokio::spawn(handle_connection(
-            client.clone(),
+            clients.clone(),
             disconnected_channel,
             cfg,
             disconnect_tx,
@@ -68,7 +70,7 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_connection(
-    client: Arc<Client>,
+    clients: Arc<Clients>,
     channel: ChannelSettings,
     cfg: AppConfig,
     disconnect_tx: tokio::sync::mpsc::Sender<ChannelSettings>,
@@ -76,7 +78,7 @@ async fn handle_connection(
     loop {
         match ws::connect_and_subscribe(channel.clone()).await {
             Ok(ws_stream) => {
-                if run(client.clone(), ws_stream, &cfg).await.is_err() {
+                if run(clients.clone(), ws_stream, &cfg).await.is_err() {
                     warn!("channel {} Disconnected", channel.name.to_string());
                     break;
                 }
@@ -92,7 +94,7 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn run(client: Arc<Client>, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
+async fn run(clients: Arc<Clients>, mut ws: WsStream, cfg: &AppConfig) -> Result<()> {
     let exchange = String::from("Okx");
     let inc = Arc::new(Mutex::new(0));
     let (tx, mut rx) = watch::channel(false);
@@ -134,13 +136,13 @@ async fn run(client: Arc<Client>, mut ws: WsStream, cfg: &AppConfig) -> Result<(
 
         match serde_json::from_str::<Value>(&String::from_utf8_lossy(&data)) {
             Ok(res) => {
-                ws::process_message(&exchange, &partition_count, client.clone(), &res)
+                ws::process_message(&exchange, &partition_count, clients.clone(), &res)
                     .await
                     .unwrap();
             },
             Err(e) => {
-                warn!("Deserialization error: {}", e);
-                warn!("{:?} No data?", data);
+                warn!("Deserialization error: {e}");
+                warn!("{data:?} No data?");
             },
         }
 

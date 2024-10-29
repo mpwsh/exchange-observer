@@ -1,7 +1,4 @@
-version: "3"
-
 services:
-
   scylla:
     container_name: scylla
     image: scylladb/scylla:5.2
