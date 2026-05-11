@@ -3,7 +3,7 @@ services:
     container_name: scylla
     image: scylladb/scylla:5.2
     restart: always
-    command: --smp 2 --memory 4G --developer-mode 1 --api-address 0.0.0.0
+    command: --smp 4 --memory 4G --developer-mode 1 --api-address 0.0.0.0
     volumes:
       - ./scylla/data:/var/lib/scylla
       - ./scylla/scylla.yaml:/etc/scylla/scylla.yaml

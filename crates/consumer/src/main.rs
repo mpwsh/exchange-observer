@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     );
 
     let session: DbSession = SessionBuilder::new()
-        .known_node(&cfg.database.ip.to_string())
+        .known_node(cfg.database.ip.to_string())
         .build()
         .await?;
     let session = Arc::new(session);

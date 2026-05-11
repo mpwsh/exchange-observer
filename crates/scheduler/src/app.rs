@@ -148,7 +148,7 @@ impl App {
 
         for t in tokens.iter_mut() {
             if !self.tokens.iter_mut().any(|top| top.instid == t.instid) {
-                t.timeout = t.timeout - self.time.elapsed;
+                t.timeout -= self.time.elapsed;
             };
 
             if t.change == 0.0 && t.timeout.num_seconds() <= 0 {
