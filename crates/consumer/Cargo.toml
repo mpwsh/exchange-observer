@@ -7,29 +7,46 @@ resolver = "2"
 
 [dependencies]
 exchange-observer = { path = "../lib" }
+
+# ---- logging / errors -----------------------------------------------------
 log = "0.4"
-tokio = { version = "1.28.0", default-features = false, features = [
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+
+# ---- async runtime --------------------------------------------------------
+tokio = { version = "1.40", default-features = false, features = [
   "io-std",
   "macros",
   "net",
   "rt-multi-thread",
   "time",
   "io-util",
+  "sync",
 ] }
-scylla = { version = "0.14.0", features = ["ssl"] }
-anyhow = "1.0.71"
-futures = "0.3.28"
+futures = "0.3"
 futures-util = { version = "0.3", default-features = false, features = [
   "sink",
   "std",
 ] }
-openssl = "0.10.52"
-rand = "0.8.5"
-tracing = "0.1.37"
-chrono = "0.4"
 futures-channel = "0.3"
-stream_throttle = "0.5.1"
-flate2 = { version = "1.0.26", features = ["zlib"], default-features = false }
+
+# ---- kafka / redpanda -----------------------------------------------------
+rskafka = "0.5"
+
+# ---- scylla ---------------------------------------------------------------
+# 1.x moved the session/session_builder paths and added prepared-statement
+# type safety; we take advantage of both here.
+scylla = "1.7"
+
+# ---- serde ----------------------------------------------------------------
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde = { version = "1.0.162", features = ["derive"] }
-rskafka = "0.5.0"
+chrono = "0.4"
+
+# ---- misc -----------------------------------------------------------------
+stream_throttle = "0.5"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

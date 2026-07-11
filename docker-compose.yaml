@@ -1,11 +1,11 @@
 services:
   scylla:
     container_name: scylla
-    image: scylladb/scylla:5.2
+    image: scylladb/scylla:2026.1
     restart: always
     command: --smp 4 --memory 4G --developer-mode 1 --api-address 0.0.0.0
     volumes:
-      - ./scylla/data:/var/lib/scylla
+      - scylla_data:/var/lib/scylla
       - ./scylla/scylla.yaml:/etc/scylla/scylla.yaml
       - ./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties
       - ./scylla/migration.cql:/tmp/migration.cql
@@ -13,10 +13,9 @@ services:
       - 9042:9042
     networks:
       infra:
-
   redpanda:
     container_name: redpanda
-    image: vectorized/redpanda:v23.1.13
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.15
     command:
       - redpanda start
       - --smp 2
@@ -25,10 +24,9 @@ services:
       - --memory 4G
       - --reserve-memory 2G
       - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
       - --pandaproxy-addr 0.0.0.0:8082
       - --advertise-pandaproxy-addr localhost:8082
-
     networks:
       infra:
     ports:
@@ -36,10 +34,9 @@ services:
       - 8082:8082
       - 9092:9092
       - 29092:29092
-
   console:
     container_name: redpanda-console
-    image: vectorized/console:v2.3.5
+    image: docker.redpanda.com/redpandadata/console:v2.8.16
     restart: on-failure
     entrypoint: /bin/sh
     command: -c "echo \"$$CONSOLE_CONFIG_FILE\" > /tmp/config.yml; /app/console"
@@ -62,6 +59,9 @@ services:
       - "8080:8080"
     depends_on:
       - redpanda
+
+volumes:
+  scylla_data:
 
 networks:
   infra:

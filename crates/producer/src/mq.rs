@@ -1,6 +1,12 @@
-use std::collections::{BTreeMap, HashMap};
+//! Kafka/Redpanda producer layer.
+
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use exchange_observer::{models::*, AppConfig};
+use log::{info, warn};
 use rskafka::{
     chrono::Utc,
     client::{
@@ -9,19 +15,23 @@ use rskafka::{
     },
     record::Record,
 };
-//use time::OffsetDateTime;
-use crate::{info, warn, Arc, Mutex, Result, Value};
+use serde_json::Value;
+use tokio::sync::Mutex;
 
+use crate::error::{ProducerError, Result};
+
+/// Cache of per-(topic, partition) producer clients so we don't create a fresh
+/// one on every message.
 #[allow(clippy::type_complexity)]
 pub struct Clients {
-    pub partitions: Arc<Mutex<HashMap<(String, i32), Arc<PartitionClient>>>>,
+    pub partitions: Mutex<HashMap<(String, i32), Arc<PartitionClient>>>,
     pub admin: Arc<Client>,
 }
 
 impl Clients {
     pub fn new(admin: Arc<Client>) -> Self {
-        Clients {
-            partitions: Arc::new(Mutex::new(HashMap::new())),
+        Self {
+            partitions: Mutex::new(HashMap::new()),
             admin,
         }
     }
@@ -31,21 +41,20 @@ impl Clients {
         topic: &str,
         partition: i32,
     ) -> Result<Arc<PartitionClient>> {
-        let key = (topic.to_string(), partition);
+        let key = (topic.to_owned(), partition);
         let mut clients = self.partitions.lock().await;
 
-        match clients.get(&key) {
-            Some(client) => Ok(client.clone()),
-            None => {
-                let partition_client = self
-                    .admin
-                    .partition_client(topic, partition, UnknownTopicHandling::Error)
-                    .await?;
-                let partition_client = Arc::new(partition_client);
-                clients.insert(key, partition_client.clone());
-                Ok(partition_client)
-            },
+        if let Some(existing) = clients.get(&key) {
+            return Ok(existing.clone());
         }
+
+        let new = Arc::new(
+            self.admin
+                .partition_client(topic, partition, UnknownTopicHandling::Error)
+                .await?,
+        );
+        clients.insert(key, new.clone());
+        Ok(new)
     }
 }
 
@@ -61,7 +70,6 @@ pub async fn produce(
     partition_client
         .produce(vec![record], Compression::Lz4)
         .await?;
-
     Ok(())
 }
 
@@ -70,7 +78,7 @@ pub fn build_record(
     channel: Channel,
     inst_id: &[u8],
     data: &str,
-    partition: String,
+    partition: i32,
 ) -> Record {
     Record {
         key: Some(inst_id.to_vec()),
@@ -79,29 +87,35 @@ pub fn build_record(
             ("Exchange".to_owned(), exchange.as_bytes().to_vec()),
             (
                 "Channel".to_owned(),
-                channel.to_string().as_bytes().to_vec(),
+                channel.to_string().into_bytes(),
             ),
-            ("Partition".to_owned(), partition.as_bytes().to_vec()),
+            ("Partition".to_owned(), partition.to_string().into_bytes()),
         ]),
         timestamp: Utc::now(),
     }
 }
 
 pub async fn create_topics(client: &Client, cfg: &AppConfig) -> Result<()> {
-    let list = client.list_topics().await?;
-    info!("Topic list: {:?}", list);
-    for t in cfg.mq.topics.iter() {
-        if !list.iter().any(|lt| lt.name == *t.name) {
-            warn!(
-                "Topic {} doesn't exist. Creating with {} partitions, timeout {}ms, replication_factor: {}",
-                t.name, t.partitions, t.max_wait_ms, t.replication_factor
-            );
-            //create topic
-            let controller_client = client.controller_client()?;
-            controller_client
-                .create_topic(&t.name, t.partitions, t.replication_factor, t.max_wait_ms)
-                .await?
+    let existing = client.list_topics().await?;
+    info!("Topic list: {existing:?}");
+
+    for topic in &cfg.mq.topics {
+        if existing.iter().any(|t| t.name == topic.name) {
+            continue;
         }
+        warn!(
+            "Topic {} doesn't exist. Creating with {} partitions, timeout {}ms, rf={}",
+            topic.name, topic.partitions, topic.max_wait_ms, topic.replication_factor
+        );
+        let controller = client.controller_client()?;
+        controller
+            .create_topic(
+                &topic.name,
+                topic.partitions,
+                topic.replication_factor,
+                topic.max_wait_ms,
+            )
+            .await?;
     }
     Ok(())
 }
@@ -114,30 +128,39 @@ pub async fn send_message(
     clients: Arc<Clients>,
     inst_id_bytes: Vec<u8>,
 ) -> Result<()> {
-    let data = match channel {
-        Channel::Tickers => serde_json::to_string(&serde_json::from_str::<Ticker>(
-            &data["data"][0].to_string(),
-        )?)?,
-        Channel::Trades => serde_json::to_string(&serde_json::from_str::<Trade>(
-            &data["data"][0].to_string(),
-        )?)?,
+    // Some OKX channels wrap the payload in `data[0]`, others build a candle
+    // from the whole message. Extract once, per-channel.
+    let first_entry = || -> Result<String> {
+        data.get("data")
+            .and_then(|d| d.get(0))
+            .ok_or(ProducerError::MissingField("data[0]"))
+            .map(ToString::to_string)
+    };
+
+    let payload = match channel {
+        Channel::Tickers => {
+            let ticker: Ticker = serde_json::from_str(&first_entry()?)?;
+            serde_json::to_string(&ticker)?
+        },
+        Channel::Trades => {
+            let trade: Trade = serde_json::from_str(&first_entry()?)?;
+            serde_json::to_string(&trade)?
+        },
         Channel::Books => {
-            serde_json::to_string(&serde_json::from_str::<Book>(&data["data"][0].to_string())?)?
+            let book: Book = serde_json::from_str(&first_entry()?)?;
+            serde_json::to_string(&book)?
         },
         Channel::Candle1m => {
-            serde_json::to_string(&Candlestick::from_candle(data).get_change().get_range())?
+            let candle = Candlestick::from_candle(data).get_change().get_range();
+            serde_json::to_string(&candle)?
         },
     };
 
-    let p = {
+    let partition = {
         let map = partition_count.lock().await;
-        *map.get(&channel.to_string()).unwrap()
+        map.get(&channel.to_string()).copied().unwrap_or(0)
     };
 
-    //Save the partition in a header (dont know how to retrieve afterwards without this)
-    let record = build_record(exchange, channel, &inst_id_bytes, &data, p.to_string());
-    produce(channel, p, clients, record)
-        .await
-        .expect("failed to produce message");
-    Ok(())
+    let record = build_record(exchange, channel, &inst_id_bytes, &payload, partition);
+    produce(channel, partition, clients, record).await
 }

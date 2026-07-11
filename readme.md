@@ -26,53 +26,46 @@ Each setting in [config.toml](config-sample.toml) is explained but feel free ope
 - Consumer (Redpanda messages -> Scylla)
 - Scheduler (ScyllaDB Queries -> Token evaluation -> UI)
 
-## Deploy Redpanda and Scylla
+## Bring up the infra
+
+The `provision.sh` script brings up all containers, waits for Scylla and
+Redpanda to become ready, runs the CQL migration, and creates the topics
+with the right retention. It's idempotent — safe to re-run.
 
 ```bash
-docker-compose up -d
+./provision.sh
 ```
 
-## Create required keyspace and tables in Scylla
+On macOS the script also bumps `fs.aio-max-nr` inside Docker Desktop's VM,
+which is required by both Scylla and Redpanda (both are seastar-based).
 
-Wait until the node is up and run the migrations.
+If you'd rather do it by hand, the equivalent steps are:
 
 ```bash
-alias nodetool="docker exec -it scylla nodetool"
-nodetool status
-### Should show 'UN' (up-normal)
-Status=Up/Down
-|/ State=Normal/Leaving/Joining/Moving
---  Address     Load       Tokens       Owns    Host ID                               Rack
-UN  172.26.0.2  540 KB     256          ?       c35c31db-0c92-4064-b2ba-2da43fa6e1a0  Rack1
+docker compose up -d
+
+# Wait until Scylla shows 'UN' (up-normal)
+docker exec -it scylla nodetool status
+
+# Run migrations
+docker exec -it scylla cqlsh -f /tmp/migration.cql
+
+# Create topics and set 12h retention
+docker exec redpanda rpk topic create candle1m tickers trades --partitions 10 --replicas 1
+docker exec redpanda rpk topic alter-config candle1m tickers trades --set retention.ms=43200000
 ```
 
-Run the migrations
-
-```bash
-alias cqlsh="docker exec -it scylla cqlsh"
-cqlsh -f /tmp/migration.cql
-```
+> Note: these topics are append-only streams, so they use the default
+> `cleanup.policy=delete` combined with `retention.ms` above. Do **not**
+> set `cleanup.policy=compact` here — compaction keeps only the latest
+> value per key, which would silently drop trades.
 
 ## Endpoints
 
 ```bash
-ScyllaDB: 127.0.0.1:9042
-Redpanda: 127.0.0.1:9092
+ScyllaDB:         127.0.0.1:9042
+Redpanda:         127.0.0.1:9092
 Redpanda console: http://localhost:8080/topics
-```
-
-## Configure data retention for each topic
-
-The producer will create the topics based on the config.toml settings
-To create them manually use:
-
-```bash
-alias rpk="docker exec redpanda rpk"
-rpk topic create candle1m tickers trades --partitions 10 --replicas 1 -c cleanup.policy=compact
-
-# Topic configuration is not available on the rskafka crate.
-# To set 12hs retention use:
-rpk topic alter-config candle1m tickers trades --set retention.ms=43200000 --brokers localhost
 ```
 
 ## Spin up all the producer and consumer
@@ -160,13 +153,15 @@ cqlsh:okx> SELECT * FROM trades WHERE instid='XCH-USDT' ORDER BY ts DESC LIMIT 1
 Delete topics from redpanda
 
 ```bash
-rpk topic delete candle1m trades tickers
+docker exec redpanda rpk topic delete candle1m trades tickers
 ```
 
 ## Destroy
 
 ```bash
-docker-compose down
-#remove scylla DB data folder
-rm ./scylla/data
+docker compose down -v
 ```
+
+The `-v` flag also removes the `scylla_data` named volume, which is where
+Scylla's data actually lives (bind mounts don't work reliably on Docker
+Desktop for Mac due to O_DIRECT alignment requirements).

@@ -1,4 +1,5 @@
-CREATE KEYSPACE IF NOT EXISTS okx WITH REPLICATION = { 'class' : 'SimpleStrategy','replication_factor' : 1 };
+CREATE KEYSPACE IF NOT EXISTS okx
+  WITH REPLICATION = { 'class' : 'NetworkTopologyStrategy', 'DC1' : 1 };
 USE okx;
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS books (
   checksum int,
   prev_seq_id int,
   seq_id int,
-  ts timestamp,primary key (instid, ts, seq_id))
+  ts timestamp,
+  primary key (instid, ts, seq_id))
 WITH default_time_to_live = 86400
 AND CLUSTERING ORDER BY (ts desc)
 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
@@ -119,4 +121,4 @@ CREATE TABLE IF NOT EXISTS strategies (
     stoploss double,
     avoid_after_stoploss boolean,
     sell_floor double,
-primary key (hash));
+    primary key (hash));

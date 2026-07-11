@@ -1,113 +1,223 @@
+//! Consumer binary: drains Redpanda topics into Scylla.
+
 use std::{
     collections::HashMap,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 
-use anyhow::Result;
-use exchange_observer::{models::*, AppConfig};
+use anyhow::Context;
+use exchange_observer::AppConfig;
 use futures::StreamExt;
 use log::{error, info, warn};
 use rskafka::client::ClientBuilder;
-use scylla::{transport::session::Session as DbSession, SessionBuilder};
+use scylla::{
+    client::{session::Session as DbSession, session_builder::SessionBuilder},
+    statement::prepared::PreparedStatement,
+};
 use stream_throttle::{ThrottlePool, ThrottleRate, ThrottledStream};
-use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 
+use crate::{
+    error::{ConsumerError, Result},
+    stats::Stats,
+};
+
+pub mod error;
 pub mod mq;
+pub mod stats;
 
-pub struct Stats {
-    pub inc: Mutex<usize>,
-    pub total_msgs: Mutex<i64>,
-    pub total_inc: Mutex<i64>,
-    pub offset_map: Mutex<HashMap<String, (i64, i64)>>,
-    pub cooldown: Mutex<Instant>,
-}
+/// Max in-flight inserts. Bounds memory and gives the driver room to pipeline
+/// without letting a slow database create unbounded backlog.
+const MAX_INFLIGHT_INSERTS: usize = 512;
+
+/// Throttle: at most this many messages/sec pulled off the Kafka streams.
+/// The old value was 50k/sec — kept the same because the local Scylla can
+/// keep up with it in dev; adjust down if you saturate the DB.
+const THROTTLE_RATE_PER_SEC: usize = 50_000;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cfg: AppConfig = AppConfig::load()?;
+async fn main() -> anyhow::Result<()> {
+    let cfg = AppConfig::load().context("loading AppConfig")?;
     info!(
-        "Connecting to database at {}:{} ...",
+        "Connecting to database at {}:{}",
         cfg.database.ip, cfg.database.port
     );
 
-    let session: DbSession = SessionBuilder::new()
-        .known_node(cfg.database.ip.to_string())
+    let session = SessionBuilder::new()
+        .known_node(format!("{}:{}", cfg.database.ip, cfg.database.port))
         .build()
-        .await?;
+        .await
+        .context("connecting to Scylla")?;
     let session = Arc::new(session);
 
-    //Check for Schema Agreement
-    info!("Waiting for schema agreement for 5 seconds...");
-    match session.await_schema_agreement().await {
-        Ok(_) => info!("Schema is in agreement - Proceeding"),
-        Err(e) => error!("Error while retrieving schema agrement. Error: {e}"),
-    };
+    info!("Waiting for schema agreement...");
+    if let Err(e) = session.await_schema_agreement().await {
+        // Not fatal — we can still write. Log loudly and continue.
+        error!("Schema agreement check failed: {e}");
+    } else {
+        info!("Schema in agreement");
+    }
 
-    // setup redpanda client
-    let connection = format!("{}:{}", cfg.mq.ip, cfg.mq.port);
-    info!("Connecting to message queue at {} ...", connection);
-    let client = ClientBuilder::new(vec![connection]).build().await?;
-    let (streams, stats) = mq::init_streams(&client, &cfg).await?;
-    let stats = Arc::new(stats);
-    //stream throttle so we dont crash the db while testing locally
-    let rate = ThrottleRate::new(50000, Duration::from_millis(1000));
+    // Prepare INSERT statements once, per (keyspace, channel). Bind the JSON
+    // payload as `?` so callers don't have to worry about escaping single
+    // quotes and payloads can't inject CQL.
+    let prepared = build_prepared_statements(&session, &cfg).await?;
+    info!("Prepared {} INSERT statements", prepared.len());
+
+    let broker = format!("{}:{}", cfg.mq.ip, cfg.mq.port);
+    info!("Connecting to message queue at {broker}");
+    let kafka = ClientBuilder::new(vec![broker])
+        .build()
+        .await
+        .context("connecting to Redpanda")?;
+
+    let (streams, initial_stats) = mq::init_streams(&kafka, &cfg).await?;
+    let stats = Arc::new(initial_stats);
+
+    // Kick off the periodic stats logger. It reads only atomics and one mutex,
+    // outside the hot path.
+    let stats_logger = tokio::spawn(stats::run_stats_logger(
+        Arc::clone(&stats),
+        Arc::clone(&session),
+        cfg.clone(),
+    ));
+
+    // Bounded concurrency for inserts.
+    let insert_permits = Arc::new(Semaphore::new(MAX_INFLIGHT_INSERTS));
+
+    let rate = ThrottleRate::new(THROTTLE_RATE_PER_SEC, Duration::from_millis(1000));
     let pool = ThrottlePool::new(rate);
 
-    let read_future = futures::stream::select_all(streams)
-        .throttle(pool)
-        .for_each(|record| {
-            let stats = Arc::clone(&stats);
-            let cfg = cfg.clone();
-            let session = session.clone();
-            async move {
-                //retrieve record
-                let (record, _partition_offset) = match record {
-                    Ok(k) => (k.0.record, k.0.offset),
-                    Err(e) => {
-                        info!("Error while reading message: {}", e);
-                        return;
-                    },
-                };
+    let mut merged = futures::stream::select_all(streams).throttle(pool);
 
-                let no_data = vec![0u8];
-                let exchange =
-                    String::from_utf8_lossy(record.headers.get("Exchange").unwrap_or(&no_data));
-                let data = &record.value.expect("unable to get record value");
-                let channel =
-                    String::from_utf8_lossy(record.headers.get("Channel").unwrap_or(&no_data));
-                let record_key = record.key.expect("Unable to get record key");
-                let inst_id = String::from_utf8_lossy(&record_key);
-                let topic = Channel::from_str(&channel).unwrap();
+    while let Some(item) = merged.next().await {
+        let (record, _partition_offset) = match item {
+            Ok((record_and_offset, _high_watermark)) => {
+                (record_and_offset.record, record_and_offset.offset)
+            },
+            Err(e) => {
+                warn!("Error reading from kafka stream: {e}");
+                continue;
+            },
+        };
 
-                let session = session.clone();
-                let payload = topic.parse(data, &inst_id).unwrap();
-                let query = format!(
-                    "INSERT INTO {}.{} JSON '{}' USING TTL {}",
-                    exchange, channel, payload, cfg.database.data_ttl
-                );
+        if let Err(e) = dispatch_record(
+            record,
+            &prepared,
+            Arc::clone(&session),
+            Arc::clone(&stats),
+            Arc::clone(&insert_permits),
+        )
+        .await
+        {
+            warn!("Failed to dispatch record: {e}");
+            stats.errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
-                let stats = mq::update_stats(&session, topic, stats, &cfg)
-                    .await
-                    .unwrap();
-                tokio::task::spawn(async move {
-                    match session.query_unpaged(query.clone(), &[]).await {
-                        Ok(k) => {
-                            if !k.warnings.is_empty() {
-                                warn!("{:?}", k.warnings)
-                            }
-                        },
-                        Err(e) => error!("{}", e),
-                    };
-                });
-                let mut inc = stats.inc.lock().await;
-                *inc += 1;
+    stats_logger.abort();
+    Ok(())
+}
 
-                let mut total_inc = stats.total_inc.lock().await;
-                *total_inc += 1;
-            }
-        });
-    read_future.await;
+/// Prepare one INSERT-JSON statement per configured channel. Called once at
+/// startup; the returned map is `Arc<PreparedStatement>` per channel name so
+/// clones on the hot path are cheap ref bumps.
+async fn build_prepared_statements(
+    session: &DbSession,
+    cfg: &AppConfig,
+) -> Result<HashMap<String, Arc<PreparedStatement>>> {
+    let keyspace = "okx"; // matches migration.cql; could be pulled from cfg if you add a field
+    let ttl = cfg.database.data_ttl;
+    let mut out = HashMap::new();
+
+    for topic in &cfg.mq.topics {
+        let cql =
+            format!("INSERT INTO {keyspace}.{name} JSON ? USING TTL {ttl}", name = topic.name);
+        let prepared = session.prepare(cql).await?;
+        out.insert(topic.name.clone(), Arc::new(prepared));
+    }
+    Ok(out)
+}
+
+/// Extract the channel + payload from one Kafka record and hand it off to an
+/// insert task under the semaphore's backpressure.
+async fn dispatch_record(
+    record: rskafka::record::Record,
+    prepared: &HashMap<String, Arc<PreparedStatement>>,
+    session: Arc<DbSession>,
+    stats: Arc<Stats>,
+    permits: Arc<Semaphore>,
+) -> Result<()> {
+    use exchange_observer::models::Channel;
+    use std::str::FromStr;
+
+    let channel_bytes = record
+        .headers
+        .get("Channel")
+        .ok_or(ConsumerError::MissingField("header:Channel"))?;
+    let channel_str = std::str::from_utf8(channel_bytes)
+        .map_err(|_| ConsumerError::UnknownChannel("<non-utf8>".to_owned()))?;
+    let channel = Channel::from_str(channel_str)
+        .map_err(|_| ConsumerError::UnknownChannel(channel_str.to_owned()))?;
+
+    let stmt = prepared
+        .get(channel_str)
+        .cloned()
+        .ok_or_else(|| ConsumerError::UnknownChannel(channel_str.to_owned()))?;
+
+    let key = record
+        .key
+        .as_deref()
+        .ok_or(ConsumerError::MissingField("record.key"))?;
+    let inst_id = std::str::from_utf8(key)
+        .map_err(|_| ConsumerError::MissingField("record.key(utf8)"))?
+        .to_owned();
+
+    let value = record
+        .value
+        .as_deref()
+        .ok_or(ConsumerError::MissingField("record.value"))?;
+
+    let payload = channel
+        .parse(value, &inst_id)
+        .map_err(|e| ConsumerError::PayloadParse {
+            channel: channel_str.to_owned(),
+            source: anyhow::anyhow!("{e:?}"),
+        })?;
+
+    // Track offsets — cheap: single atomic increment.
+    stats.received.fetch_add(1, Ordering::Relaxed);
+
+    // Acquire a permit; blocks (async-waits) if MAX_INFLIGHT_INSERTS is
+    // reached. This is the backpressure — the read loop stops pulling from
+    // Kafka until the DB catches up.
+    let permit = match permits.acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            // Semaphore was closed. We don't close it anywhere, but be
+            // defensive and drop the record instead of panicking.
+            error!("Insert semaphore closed unexpectedly; dropping record");
+            return Ok(());
+        },
+    };
+
+    tokio::spawn(async move {
+        let _permit = permit; // drop at end of task = release backpressure slot
+        match session.execute_unpaged(&stmt, (payload,)).await {
+            Ok(result) => {
+                let warnings = result.warnings().collect::<Vec<_>>();
+                if !warnings.is_empty() {
+                    warn!("Scylla warnings: {warnings:?}");
+                }
+                stats.inserted.fetch_add(1, Ordering::Relaxed);
+            },
+            Err(e) => {
+                error!("Insert failed: {e}");
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+            },
+        }
+    });
+
     Ok(())
 }
