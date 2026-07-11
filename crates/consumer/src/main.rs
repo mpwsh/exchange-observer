@@ -2,9 +2,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{atomic::Ordering, Arc},
-    time::Duration,
+    sync::{Arc, atomic::Ordering},
 };
+
+use tokio::time::{Duration, timeout};
 
 use anyhow::Context;
 use exchange_observer::AppConfig;
@@ -35,7 +36,6 @@ const MAX_INFLIGHT_INSERTS: usize = 512;
 /// The old value was 50k/sec — kept the same because the local Scylla can
 /// keep up with it in dev; adjust down if you saturate the DB.
 const THROTTLE_RATE_PER_SEC: usize = 50_000;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cfg = AppConfig::load().context("loading AppConfig")?;
@@ -51,17 +51,18 @@ async fn main() -> anyhow::Result<()> {
         .context("connecting to Scylla")?;
     let session = Arc::new(session);
 
-    info!("Waiting for schema agreement...");
-    if let Err(e) = session.await_schema_agreement().await {
-        // Not fatal — we can still write. Log loudly and continue.
-        error!("Schema agreement check failed: {e}");
+    if cfg.database.skip_schema_agreement {
+        info!("skip_schema_agreement=true; skipping check");
     } else {
-        info!("Schema in agreement");
+        info!("Waiting for schema agreement (max 10s)...");
+        match timeout(Duration::from_secs(10), session.await_schema_agreement()).await {
+            Ok(Ok(_)) => info!("Schema in agreement"),
+            Ok(Err(e)) => warn!("Schema agreement returned error (continuing anyway): {e}"),
+            Err(_) => warn!("Schema agreement timed out after 10s (continuing anyway)"),
+        }
     }
 
-    // Prepare INSERT statements once, per (keyspace, channel). Bind the JSON
-    // payload as `?` so callers don't have to worry about escaping single
-    // quotes and payloads can't inject CQL.
+    info!("Building prepared statements...");
     let prepared = build_prepared_statements(&session, &cfg).await?;
     info!("Prepared {} INSERT statements", prepared.len());
 
@@ -127,16 +128,21 @@ async fn build_prepared_statements(
     session: &DbSession,
     cfg: &AppConfig,
 ) -> Result<HashMap<String, Arc<PreparedStatement>>> {
-    let keyspace = "okx"; // matches migration.cql; could be pulled from cfg if you add a field
+    let keyspace = &cfg.database.keyspace;
     let ttl = cfg.database.data_ttl;
     let mut out = HashMap::new();
 
     for topic in &cfg.mq.topics {
-        let cql =
-            format!("INSERT INTO {keyspace}.{name} JSON ? USING TTL {ttl}", name = topic.name);
+        let cql = format!(
+            "INSERT INTO {keyspace}.{name} JSON ? USING TTL {ttl}",
+            name = topic.name
+        );
+        info!("Preparing: {cql}");
         let prepared = session.prepare(cql).await?;
+        info!("Prepared: {}", topic.name);
         out.insert(topic.name.clone(), Arc::new(prepared));
     }
+    info!("All prepared statements built");
     Ok(out)
 }
 

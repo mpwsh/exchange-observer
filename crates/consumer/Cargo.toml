@@ -34,12 +34,11 @@ futures-channel = "0.3"
 # ---- kafka / redpanda -----------------------------------------------------
 rskafka = "0.5"
 
-# ---- scylla ---------------------------------------------------------------
+scylla = { version = "1.7", features = ["metrics"] }
+
+# ---- serde ----------------------------------------------------------------# ---- scylla ---------------------------------------------------------------
 # 1.x moved the session/session_builder paths and added prepared-statement
 # type safety; we take advantage of both here.
-scylla = "1.7"
-
-# ---- serde ----------------------------------------------------------------
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"

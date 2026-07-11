@@ -17,7 +17,7 @@ num_tokens: 256
 
 # Data / commitlog directories
 data_file_directories:
-    - /var/lib/scylla/data
+  - /var/lib/scylla/data
 commitlog_directory: /var/lib/scylla/commitlog
 
 # commitlog_sync may be either "periodic" or "batch."
@@ -27,13 +27,14 @@ commitlog_segment_size_in_mb: 32
 
 # Seeds — for a single-node dev cluster, itself is fine.
 seed_provider:
-    - class_name: org.apache.cassandra.locator.SimpleSeedProvider
-      parameters:
-          - seeds: "127.0.0.1"
+  - class_name: org.apache.cassandra.locator.SimpleSeedProvider
+    parameters:
+      - seeds: "127.0.0.1"
 
 # For a container binding all interfaces is fine (docker isolates it).
 listen_address: localhost
 # broadcast_address: 1.2.3.4
+broadcast_rpc_address: 127.0.0.1
 
 # CQL native transport
 native_transport_port: 9042
@@ -88,7 +89,6 @@ commitlog_total_space_in_mb: -1
 
 # Shard data distribution. Keep 12 for new clusters.
 murmur3_partitioner_ignore_msb_bits: 12
-
 # ---- Scylla 2026.x additions -------------------------------------------
 #
 # Tablets (default in 2026.x): tablet-based data distribution replaces

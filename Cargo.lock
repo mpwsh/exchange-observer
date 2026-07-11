@@ -1866,6 +1866,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12cb882ccb290b8646e554b157ab0b71e64e8d5bef775cd66b6531e52d302669"
 
 [[package]]
+name = "histogram"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "099d45a031296a7a40e01137b56c0c552f2a545568ef6058e47d674046def0db"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3574,7 +3583,7 @@ dependencies = [
  "dashmap 5.5.3",
  "futures",
  "hashbrown 0.14.5",
- "histogram",
+ "histogram 0.6.9",
  "itertools 0.13.0",
  "lazy_static",
  "lz4_flex",
@@ -3606,6 +3615,7 @@ dependencies = [
  "dashmap 6.2.1",
  "futures",
  "hashbrown 0.15.0",
+ "histogram 0.11.5",
  "itertools 0.14.0",
  "rand 0.9.4",
  "rand_pcg 0.9.0",

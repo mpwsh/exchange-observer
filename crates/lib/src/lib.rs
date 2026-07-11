@@ -1,13 +1,13 @@
 use std::{env, net::Ipv4Addr};
 
 use anyhow::Result;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use hmac::{Hmac, Mac};
 use log::debug;
 use serde_derive::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
-pub use time::{error::Format, format_description::well_known::Rfc3339, OffsetDateTime};
+pub use time::{OffsetDateTime, error::Format, format_description::well_known::Rfc3339};
 pub mod models;
 pub mod util;
 
@@ -31,6 +31,8 @@ pub struct Database {
     pub port: u16,
     pub keyspace: String,
     pub data_ttl: u32,
+    #[serde(default)]
+    pub skip_schema_agreement: bool,
 }
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Pushover {
@@ -175,11 +177,12 @@ impl Default for Database {
             ip: Ipv4Addr::new(127, 0, 0, 1),
             port: 9042,
             keyspace: String::from("okx"),
-            //1 day
             data_ttl: (3600 * 24),
+            skip_schema_agreement: false,
         }
     }
 }
+
 impl Authentication {
     // Code from: Nouzan
     // https://github.com/Nouzan/exc/blob/main/exc-okx/src/key.rs
