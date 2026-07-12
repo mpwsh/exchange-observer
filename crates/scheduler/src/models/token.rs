@@ -60,16 +60,21 @@ pub struct Token {
     pub report: Report,
 }
 
-#[derive(FromRow, Serialize, Deserialize, Debug, Clone)]
+#[derive(DeserializeRow, Serialize, Deserialize, Debug, Clone)]
 pub struct Candlestick {
     pub instid: String,
     pub ts: DateTime<Utc>,
-    pub change: f32,
+    pub change: f64,
     pub close: f64,
     pub high: f64,
     pub low: f64,
     pub open: f64,
-    pub range: f32,
+    pub range: f64,
+    // Column in Scylla is `volume` (renamed during typed-model migration),
+    // but the field stays `vol` here for backwards compat with the console's
+    // wire format and existing scheduler code. The scylla attribute maps to
+    // the actual DB column name.
+    #[scylla(rename = "volume")]
     pub vol: f64,
 }
 
@@ -369,24 +374,26 @@ impl Token {
             self.instid, &strategy.hash
         );
 
-        if let Some(rows) = db_session.query_unpaged(&*query, &[]).await.unwrap().rows {
-            for row in rows.into_typed::<(i64,)>() {
-                let (c,): (i64,) = row.unwrap();
-                results_count = c;
-            }
-        };
+        let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
+        let rows_result = result.into_rows_result().unwrap();
+        for row in rows_result.rows::<(i64,)>().unwrap() {
+            let (c,) = row.unwrap();
+            results_count = c;
+        }
         if results_count >= 1 {
             let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
                 self.instid, strategy.hash,
             );
-            if let Some(rows) = db_session.query_unpaged(&*query, &[]).await.unwrap().rows {
-                for row in rows.into_typed::<(f32, i64)>() {
-                    let (highest, highest_elapsed): (f32, i64) = row.unwrap();
-                    change_deviation.push(highest);
-                    time_deviation.push(highest_elapsed as f32);
-                }
-            };
+            let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
+            let rows_result = result.into_rows_result().unwrap();
+            for row in rows_result.rows::<(f64, i64)>().unwrap() {
+                let (highest, highest_elapsed) = row.unwrap();
+                // Report.highest is `double` after schema migration; cast to f32 for
+                // Token's std_deviation helper which operates on f32 slices.
+                change_deviation.push(highest as f32);
+                time_deviation.push(highest_elapsed as f32);
+            }
             let change_target = std_deviation(&change_deviation[..]).unwrap();
             let timeout_target =
                 Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
@@ -437,31 +444,32 @@ impl Token {
             && self.change >= strategy.min_change
             && (self.std_deviation >= strategy.min_deviation && self.std_deviation <= strategy.max_deviation)
             && last_candle.vol >= spendable
-            && last_candle.change > strategy.min_change_last_candle
+            && last_candle.change > strategy.min_change_last_candle as f64
             && self.vol > strategy.min_vol.unwrap()
     }
 
     pub fn sum_candles(&mut self) -> &mut Self {
         //check if vol is enough in the selected timeframe
         self.vol = self.candlesticks.iter().map(|x| x.vol).sum();
-        // Sum vol, changes, and range from candlesticks
+        // Sum vol, changes, and range from candlesticks (all f64 from DB).
         let (vol, change, range) = self.candlesticks.iter().fold(
-            (0.0, 0.0, 0.0),
+            (0.0_f64, 0.0_f64, 0.0_f64),
             |(vol_acc, change_acc, range_acc), x| {
                 (vol_acc + x.vol, change_acc + x.change, range_acc + x.range)
             },
         );
         self.vol = vol;
+        // Token.change/range are f32 for the console wire format — cast at the boundary.
         if self.status == token::Status::Waiting {
-            self.change = change;
+            self.change = change as f32;
         }
-        self.range = range;
+        self.range = range as f32;
 
         let changes: Vec<f32> = self
             .candlesticks
             .clone()
             .into_iter()
-            .map(|x| x.change)
+            .map(|x| x.change as f32)
             .collect();
         self.std_deviation = std_deviation(&changes).unwrap_or(0.0);
         self
@@ -470,7 +478,7 @@ impl Token {
     pub fn update_reports(&mut self, timeout: i64) -> &mut Self {
         let t = self;
         t.report.time_left = t.timeout.num_seconds();
-        t.change = get_percentage_diff(t.price, t.buy_price);
+        t.change = get_percentage_diff(t.price, t.buy_price) as f32;
         if t.change >= t.report.highest {
             t.report.highest = t.change;
             t.report.highest_elapsed = timeout - t.timeout.num_seconds();

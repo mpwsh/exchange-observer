@@ -3,7 +3,7 @@ use std::sync::Arc;
 use console::Term;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use pushover_rs::{
-    send_pushover_request, Message, MessageBuilder, PushoverResponse, PushoverSound,
+    Message, MessageBuilder, PushoverResponse, PushoverSound, send_pushover_request,
 };
 use time::Instant;
 
@@ -119,15 +119,14 @@ impl App {
                 t.instid,
             );
 
-            if let Some(rows) = self.db_session.query_unpaged(&*query, &[]).await?.rows {
-                for row in rows.into_typed::<(f64, f64, f64, f64, f64)>() {
-                    let (last, open24h, volccy24h, high24h, low24h): (f64, f64, f64, f64, f64) =
-                        row?;
-                    t.vol24h = volccy24h;
-                    t.change24h = get_percentage_diff(last, open24h);
-                    t.range24h = get_percentage_diff(high24h, low24h);
-                }
-            };
+            let result = self.db_session.query_unpaged(&*query, &[]).await?;
+            let rows_result = result.into_rows_result()?;
+            for row in rows_result.rows::<(f64, f64, f64, f64, f64)>()? {
+                let (last, open24h, volccy24h, high24h, low24h) = row?;
+                t.vol24h = volccy24h;
+                t.change24h = get_percentage_diff(last, open24h) as f32;
+                t.range24h = get_percentage_diff(high24h, low24h) as f32;
+            }
         }
         Ok(self)
     }
@@ -139,7 +138,7 @@ impl App {
                     .last()
                     .unwrap_or(&Candlestick::new(token.price))
                     .change
-                    > strategy.min_change
+                    > strategy.min_change as f64
                 {
                     token.timeout = token.config.timeout
                 }
@@ -185,7 +184,10 @@ impl App {
         //last -timeframe- candles
         let get_candles_query = self
             .db_session
-            .prepare("SELECT * FROM candle1m WHERE instid=? AND ts <= ? LIMIT ?")
+            .prepare(
+                "SELECT instid, ts, change, close, high, low, open, range, volume \
+                 FROM candle1m WHERE instid=? AND ts <= ? LIMIT ?",
+            )
             .await?;
 
         //Last min tickers
@@ -208,17 +210,15 @@ impl App {
             let get_price_stmt = get_price_query.clone();
             async move {
                 //Get all candles in the selected timeframe
-                if let Some(rows) = self
+                let result = self
                     .db_session
                     .execute_unpaged(&get_candle_stmt, (&token.instid, dt, timeframe as i32))
-                    .await?
-                    .rows
-                {
-                    for row in rows.into_typed::<Candlestick>() {
-                        let candle = row.unwrap_or(Candlestick::new(token.price));
-                        token.add_or_update_candle(candle)
-                    }
-                };
+                    .await?;
+                let rows_result = result.into_rows_result()?;
+                for row in rows_result.rows::<Candlestick>()? {
+                    let candle = row.unwrap_or(Candlestick::new(token.price));
+                    token.add_or_update_candle(candle)
+                }
 
                 let dt = self.time.utc;
                 let last_min = match token.candlesticks.last() {
@@ -229,49 +229,41 @@ impl App {
                 };
 
                 //Token price
-                token.price = if let Some(rows) = self
+                let price_result = self
                     .db_session
                     .execute_unpaged(&get_price_stmt, (&token.instid,))
-                    .await?
-                    .rows
-                {
-                    let tickers: Vec<(f64,)> =
-                        rows.into_typed::<(f64,)>().filter_map(Result::ok).collect();
-                    if let Some(ticker) = tickers.last() {
-                        ticker.0
-                    } else {
-                        token.price
-                    }
-                } else {
-                    token.price
-                };
+                    .await?;
+                let price_rows = price_result.into_rows_result()?;
+                let tickers: Vec<(f64,)> = price_rows
+                    .rows::<(f64,)>()?
+                    .filter_map(Result::ok)
+                    .collect();
+                token.price = tickers.last().map(|t| t.0).unwrap_or(token.price);
 
                 //Last candle built from last minute of tickers
-                if let Some(rows) = self
+                let ticker_result = self
                     .db_session
                     .execute_unpaged(&get_ticker_stmt, (&token.instid, last_min))
-                    .await?
-                    .rows
-                {
-                    let tickers: Vec<(f64, f64, DateTime<Utc>)> = rows
-                        .into_typed::<(f64, f64, DateTime<Utc>)>()
-                        .filter_map(Result::ok)
-                        .collect();
+                    .await?;
+                let ticker_rows = ticker_result.into_rows_result()?;
+                let tickers: Vec<(f64, f64, DateTime<Utc>)> = ticker_rows
+                    .rows::<(f64, f64, DateTime<Utc>)>()?
+                    .filter_map(Result::ok)
+                    .collect();
 
-                    token.candlesticks.sort_by(|a, b| {
-                        a.ts.partial_cmp(&b.ts)
-                            .expect("unable to compare timestamps")
-                    });
-                    let mut last_candle =
-                        Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
-                    if last_candle.change == 0.0 {
-                        last_candle.open = token.price;
-                        last_candle.high = token.price;
-                        last_candle.low = token.price;
-                        last_candle.close = token.price;
-                    }
-                    token.add_or_update_candle(last_candle);
-                };
+                token.candlesticks.sort_by(|a, b| {
+                    a.ts.partial_cmp(&b.ts)
+                        .expect("unable to compare timestamps")
+                });
+                let mut last_candle =
+                    Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
+                if last_candle.change == 0.0 {
+                    last_candle.open = token.price;
+                    last_candle.high = token.price;
+                    last_candle.low = token.price;
+                    last_candle.close = token.price;
+                }
+                token.add_or_update_candle(last_candle);
 
                 while token.candlesticks.len() > timeframe as usize {
                     token.candlesticks.remove(0);
@@ -501,23 +493,24 @@ impl App {
         let xdt = self.time.utc - Duration::minutes(timeframe);
         let dt = xdt.with_second(0).unwrap().with_nanosecond(0).unwrap();
         let query = format!(
-            "SELECT * FROM okx.candle1m WHERE ts >= '{}'",
+            "SELECT instid, ts, change, close, high, low, open, range, volume \
+             FROM okx.candle1m WHERE ts >= '{}' ALLOW FILTERING",
             dt.timestamp_millis()
         );
 
-        if let Some(rows) = self.db_session.query_unpaged(&*query, &[]).await?.rows {
-            for row in rows.into_typed::<Candlestick>() {
-                let candle = row?;
-                if let Some(token) = self.tokens.iter_mut().find(|t| candle.instid == t.instid) {
-                    token.add_or_update_candle(candle);
-                } else {
-                    let mut new_token =
-                        Token::new(&candle.instid).set_cooldown(self.cooldown.num_seconds());
-                    new_token.add_or_update_candle(candle);
-                    self.tokens.push(new_token);
-                }
+        let result = self.db_session.query_unpaged(&*query, &[]).await?;
+        let rows_result = result.into_rows_result()?;
+        for row in rows_result.rows::<Candlestick>()? {
+            let candle = row?;
+            if let Some(token) = self.tokens.iter_mut().find(|t| candle.instid == t.instid) {
+                token.add_or_update_candle(candle);
+            } else {
+                let mut new_token =
+                    Token::new(&candle.instid).set_cooldown(self.cooldown.num_seconds());
+                new_token.add_or_update_candle(candle);
+                self.tokens.push(new_token);
             }
-        };
+        }
         Ok(self)
     }
 }

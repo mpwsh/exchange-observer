@@ -8,7 +8,9 @@ pub use exchange_observer::{
     AppConfig, Authentication, Exchange, OffsetDateTime, Pushover, Strategy,
 };
 pub use scylla::{
-    macros::FromRow, transport::Compression, IntoTypedRows, QueryResult, Session, SessionBuilder,
+    client::{session::Session, session_builder::SessionBuilder, Compression},
+    response::query_result::QueryResult,
+    DeserializeRow,
 };
 pub use serde_derive::{Deserialize, Serialize};
 pub use serde_with::{DurationMilliSeconds, DurationSeconds};

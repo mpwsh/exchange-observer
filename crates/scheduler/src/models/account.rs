@@ -157,7 +157,7 @@ impl Account {
             token_balances += t.balance.available * t.price;
         }
         self.balance.current += self.balance.available + open_order_value + token_balances;
-        self.change = get_percentage_diff(self.balance.current, self.balance.start);
+        self.change = get_percentage_diff(self.balance.current, self.balance.start) as f32;
         Ok(self)
     }
 
