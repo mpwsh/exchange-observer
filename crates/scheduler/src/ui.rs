@@ -44,7 +44,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Fraktur),
             );
             //Last candle
-            let blank = Candlestick::new(t.price);
+            let blank = Candlestick::new(t.price, app.clock.now_utc());
             let last = t.candlesticks.last().unwrap_or(&blank);
             if last.change < 0.00 {
                 token_row.push(
@@ -205,7 +205,7 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
                     .add_attribute(Attribute::Fraktur),
             );
             //Last candle
-            let blank = Candlestick::new(t.price);
+            let blank = Candlestick::new(t.price, app.clock.now_utc());
             let last = t.candlesticks.last().unwrap_or(&blank);
             if last.change < 0.00 {
                 token_row.push(
@@ -616,8 +616,9 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
         );
         row.push(Cell::new(format!("{}", app.cycles)).set_alignment(CellAlignment::Center));
 
+        let cycle_latency = app.clock.monotonic().saturating_sub(app.time.mono);
         row.push(
-            Cell::new(format!("{} ms", app.time.now.elapsed().as_millis()))
+            Cell::new(format!("{} ms", cycle_latency.as_millis()))
                 .set_alignment(CellAlignment::Center),
         );
 

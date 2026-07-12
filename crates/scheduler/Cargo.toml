@@ -7,6 +7,7 @@ authors.workspace = true
 [dependencies]
 scylla = { version = "1.7", features = ["chrono-04"] }
 exchange-observer = { path = "../lib" }
+engine = { path = "../engine" }
 tokio = { version = "1.28.0", features = ["full"] }
 futures = "0.3.28"
 bigdecimal = "0.4.3"
@@ -30,3 +31,8 @@ serde_with = { version = "3.8.1", features = ["chrono", "chrono_0_4"] }
 rand = "0.8.5"
 tokio-tungstenite = "0.21.0"
 futures-channel = "0.3.28"
+
+# Ambient time (`Utc::now`, `Instant::now`) is banned; all time flows through
+# engine::Clock. See clippy.toml at the workspace root.
+[lints.clippy]
+disallowed_methods = "deny"

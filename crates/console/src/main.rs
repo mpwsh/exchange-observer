@@ -1,22 +1,29 @@
 #![forbid(unsafe_code)]
-#![cfg_attr(not(debug_assertions), deny(warnings))] // Forbid warnings in release builds
+#![cfg_attr(not(debug_assertions), deny(warnings))]
 #![warn(clippy::all, rust_2018_idioms)]
 
-// When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    env_logger::init();
 
     let mut app = console::Console::default();
-    app.url = "ws://127.0.0.1:9002".to_string();
+    app.url = "ws://127.0.0.1:9002".to_owned();
+
     let native_options = eframe::NativeOptions {
-        maximized: true,
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 720.0])
+            .with_maximized(true),
         ..Default::default()
     };
+
     eframe::run_native(
         "exchange-observer",
         native_options,
-        Box::new(|_cc| Box::new(app)),
+        Box::new(|_cc| Ok(Box::new(app))),
     )
 }
+
+// The wasm entry point lives in web.rs; main.rs is only used on native.
+#[cfg(target_arch = "wasm32")]
+fn main() {}

@@ -109,6 +109,7 @@ pub struct Strategy {
     pub stoploss: f32,
     pub avoid_after_stoploss: bool,
     pub sell_floor: Option<f32>,
+    pub min_rising_candles: Option<u32>,
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Ui {
@@ -265,6 +266,7 @@ impl Strategy {
             min_change_last_candle: 0.1,
             min_deviation: 0.0,
             max_deviation: 0.5,
+            min_rising_candles: Some(3),
             deny_list: None,
             cashout: 10.0,
             quickstart: false,

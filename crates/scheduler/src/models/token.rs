@@ -78,20 +78,13 @@ pub struct Candlestick {
     pub vol: f64,
 }
 
-impl Default for Candlestick {
-    fn default() -> Self {
-        Candlestick::new(0.0)
-    }
-}
 impl Candlestick {
-    pub fn new(open: f64) -> Self {
+    /// Blank candle at `now` (truncated to the minute). Time is passed in as
+    /// data — model constructors never read ambient time.
+    pub fn new(open: f64, now: DateTime<Utc>) -> Self {
         Self {
             instid: String::new(),
-            ts: Utc::now()
-                .with_second(0)
-                .unwrap()
-                .with_nanosecond(0)
-                .unwrap(),
+            ts: now.with_second(0).unwrap().with_nanosecond(0).unwrap(),
             change: 0.0,
             close: open,
             high: open,
@@ -104,6 +97,7 @@ impl Candlestick {
     pub fn from_tickers(
         instid: &str,
         tickers: &[(f64, f64, DateTime<Utc>)],
+        now: DateTime<Utc>,
     ) -> Option<Candlestick> {
         if tickers.is_empty() {
             return None;
@@ -121,11 +115,7 @@ impl Candlestick {
         let change = get_percentage_diff(close, open);
         let range = get_percentage_diff(high, low);
         let ts = tickers.last()?.2;
-        let time = if ts.timestamp_millis() == 0 {
-            Utc::now()
-        } else {
-            ts
-        };
+        let time = if ts.timestamp_millis() == 0 { now } else { ts };
 
         Some(Candlestick {
             instid: instid.to_string(),
@@ -138,6 +128,20 @@ impl Candlestick {
             range,
             vol,
         })
+    }
+
+    /// Trimmed, read-only view of this candle for the strategy boundary.
+    pub fn view(&self) -> Candle {
+        Candle {
+            ts: self.ts,
+            open: self.open,
+            high: self.high,
+            low: self.low,
+            close: self.close,
+            change: self.change,
+            range: self.range,
+            vol: self.vol,
+        }
     }
 }
 
@@ -211,7 +215,8 @@ impl Token {
         &mut self,
         trade_enabled: bool,
         auth: Authentication,
-        strategy: &Strategy,
+        config: &StrategyConfig,
+        now: DateTime<Utc>,
     ) -> Result<&Self> {
         self.buy_price = self.price;
         let mut order = trade::Order::new(
@@ -219,36 +224,39 @@ impl Token {
             self.buy_price.to_string(),
             self.balance.start.to_string(),
             Side::Buy,
-            &strategy.order_type,
-            &strategy.hash,
+            &config.order_type,
+            &config.hash,
+            now,
         );
         order.publish(trade_enabled, &auth).await?;
         self.orders.get_or_insert_with(Vec::new).push(order);
 
         Ok(self)
     }
-    pub fn tag_invalid(
-        &mut self,
-        //mut account: Account,
-        tokens: &[Token],
-        strategy: &Strategy,
-    ) -> Result<&mut Self> {
-        let found = tokens.iter().any(|t| self.instid == t.instid);
+    /// Applies a strategy exit decision. Mirrors the old `tag_invalid`: while
+    /// the position is `Trading` the exit reason is *replaced* by the
+    /// decision (a `Hold` clears any stale reason), and any set reason moves
+    /// the token to `Selling` and stamps the report.
+    pub fn apply_exit(&mut self, decision: ExitDecision) -> &mut Self {
         if self.status == token::Status::Trading {
-            self.exit_reason = self.get_exit_reason(strategy, found);
+            self.exit_reason = match decision {
+                ExitDecision::Exit(reason) => Some(reason),
+                ExitDecision::Hold => None,
+            };
         }
         if let Some(reason) = &self.exit_reason {
             self.status = token::Status::Selling;
             self.report.reason = reason.to_string();
         }
-        Ok(self)
+        self
     }
 
     pub async fn sell(
         &mut self,
         trade_enabled: bool,
         auth: Authentication,
-        strategy: &Strategy,
+        config: &StrategyConfig,
+        now: DateTime<Utc>,
     ) -> Result<&Self> {
         let sell_balance = if trade_enabled {
             Account::get_balance(&self.instid.replace("-USDT", ""), &auth)
@@ -276,7 +284,7 @@ impl Token {
 
         //sell to market price if we tried to sell 5 times
         let ord_type = match sell_count {
-            x if x <= 5 => &strategy.order_type,
+            x if x <= 5 => &config.order_type,
             _ => "market",
         };
 
@@ -286,7 +294,8 @@ impl Token {
             sell_balance.to_string(),
             Side::Sell,
             ord_type,
-            &strategy.hash,
+            &config.hash,
+            now,
         );
 
         order.publish(trade_enabled, &auth).await?;
@@ -304,64 +313,22 @@ impl Token {
         Ok(self)
     }
 
-    pub fn get_exit_reason(&self, strategy: &Strategy, token_found: bool) -> Option<ExitReason> {
-        //thresholds
-        let timeout_threshold = Duration::seconds(strategy.timeout - 5);
-        let sell_floor = strategy.sell_floor.unwrap_or(0.0);
-        let volume_threshold = strategy
-            .min_vol
-            .unwrap_or((strategy.timeframe * 1600) as f64)
-            / strategy.timeframe as f64;
-        let low_volume_condition = |c: &&Candlestick| c.vol < volume_threshold;
-
-        let low_volume = self
-            .candlesticks
-            .iter()
-            .filter(low_volume_condition)
-            .count();
-
-        // Take the last 5 candlesticks (or fewer if there are not enough)
-
-        /*
-        let last_candles_change: Vec<_> = self
-            .candlesticks
-            .iter()
-            .rev()
-            .take(5)
-            .filter(|&c| c.change == 0.0)
-            .collect::<Vec<&Candlestick>>();
-
-
-        if last_candles_change.len() >= (strategy.timeframe / 2) as usize {
-            return Some(ExitReason::LowChange);
-        }*/
-
-        if self.timeout.num_seconds() <= 0 {
-            return Some(ExitReason::Timeout);
+    /// Read-only snapshot of this open position for `Strategy::should_exit`.
+    /// `still_listed` is whether the token still appears in the scheduler's
+    /// valid-token list this cycle.
+    pub fn position_view(&self, still_listed: bool) -> PositionView {
+        PositionView {
+            instid: self.instid.clone(),
+            change: f64::from(self.change),
+            timeout: self.timeout,
+            still_listed,
+            candles: self.candlesticks.iter().map(Candlestick::view).collect(),
         }
-
-        if self.change <= -strategy.stoploss {
-            return Some(ExitReason::Stoploss);
-        }
-
-        if self.change >= strategy.cashout {
-            return Some(ExitReason::Cashout);
-        }
-
-        if self.change >= sell_floor && self.timeout < timeout_threshold && !token_found {
-            return Some(ExitReason::FloorReached);
-        }
-
-        if low_volume as i64 >= strategy.timeframe / 2 {
-            //Half of the candles in the selected timeframe show volume lower than our spendable
-            //  return Some(ExitReason::LowVolume);
-        }
-
-        None
     }
+
     pub async fn configure_from_report(
         &mut self,
-        strategy: &Strategy,
+        config: &StrategyConfig,
         db_session: &Session,
     ) -> &Self {
         let mut time_deviation = Vec::new();
@@ -371,7 +338,7 @@ impl Token {
 
         let query = format!(
             "select count(instid) from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-            self.instid, &strategy.hash
+            self.instid, &config.hash
         );
 
         let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
@@ -383,7 +350,7 @@ impl Token {
         if results_count >= 1 {
             let query = format!(
                 "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-                self.instid, strategy.hash,
+                self.instid, config.hash,
             );
             let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
             let rows_result = result.into_rows_result().unwrap();
@@ -399,53 +366,47 @@ impl Token {
                 Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
 
             if timeout_target.num_seconds() < 30 {
-                self.config.timeout = Duration::seconds(strategy.timeout);
+                self.config.timeout = Duration::seconds(config.timeout);
                 self.timeout = self.config.timeout;
             } else {
                 self.timeout = timeout_target;
                 self.config.timeout = timeout_target;
             };
             if change_target < 0.1 {
-                self.config.sell_floor = strategy.sell_floor.unwrap();
+                self.config.sell_floor = config.sell_floor.unwrap();
             } else {
                 self.config.sell_floor = change_target;
             };
         } else {
-            self.timeout = Duration::seconds(strategy.timeout);
+            self.timeout = Duration::seconds(config.timeout);
             self.config.timeout = self.timeout;
-            self.config.sell_floor = strategy.sell_floor.unwrap();
+            self.config.sell_floor = config.sell_floor.unwrap();
         };
         self
     }
 
-    pub fn is_valid(&self, deny_list: &[String], strategy: &Strategy, spendable: f64) -> bool {
-        let denied = deny_list
-            .iter()
-            .any(|i| format!("{}-USDT", i) == self.instid);
-
-        let pcc = self
-            .candlesticks
-            .iter()
-            .filter(|x| x.vol > spendable)
-            .count();
-
-        let cchange = self.candlesticks.iter().filter(|x| x.change > 0.0).count();
-
-        let blank_candle = Candlestick::new(self.price);
-        let last_candle = self.candlesticks.last().unwrap_or(&blank_candle);
-
-        !denied
-            // No missing candles in our data
-            && self.candlesticks.len() >= strategy.timeframe as usize
-            // At least half of the candles should have higher volume than our spendable
-            && pcc >= strategy.timeframe as usize / 2
-            // At least half of the candles have some change
-            && cchange >= strategy.timeframe as usize / 2
-            && self.change >= strategy.min_change
-            && (self.std_deviation >= strategy.min_deviation && self.std_deviation <= strategy.max_deviation)
-            && last_candle.vol >= spendable
-            && last_candle.change > strategy.min_change_last_candle as f64
-            && self.vol > strategy.min_vol.unwrap()
+    /// Read-only snapshot of this candidate token for
+    /// `Strategy::should_enter`. The threshold checks that used to live here
+    /// (`is_valid`) are now `engine::threshold::Thresholds::entry_decision`.
+    pub fn entry_view(&self, denied: bool) -> TokenView {
+        if let Some(last) = self.candlesticks.last() {
+            log::debug!(
+                "[{}] engine last-candle: ts={} vol={:.2} change={:.4}",
+                self.instid,
+                last.ts,
+                last.vol,
+                last.change
+            );
+        }
+        TokenView {
+            instid: self.instid.clone(),
+            price: self.price,
+            change: f64::from(self.change),
+            std_deviation: f64::from(self.std_deviation),
+            vol: self.vol,
+            denied,
+            candles: self.candlesticks.iter().map(Candlestick::view).collect(),
+        }
     }
 
     pub fn sum_candles(&mut self) -> &mut Self {
@@ -501,19 +462,19 @@ impl Token {
                     && o.prev_state != OrderState::Created
                     && o.state != OrderState::Filled
             }) {
-                log::info!(
+                log::debug!(
                     "[{}] Checking order state. result: {}",
                     self.instid,
                     order.state.to_string()
                 );
                 if enable_trading {
-                    log::info!("[{}] Retrieving order state form exchange", self.instid);
+                    log::debug!("[{}] Retrieving order state form exchange", self.instid);
                     let got_state = order.get_state(auth).await?;
                     if order.state != got_state {
                         order.state = got_state.clone();
                     }
                 } else {
-                    use rand::{thread_rng, Rng};
+                    use rand::{Rng, thread_rng};
                     let mut rng = thread_rng();
                     let random_state = if rng.gen_bool(1.0 / 6.0) {
                         OrderState::Filled

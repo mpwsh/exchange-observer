@@ -22,7 +22,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //hash and save the strategy to the DB
     cfg.strategy.hash = cfg.strategy.get_hash();
 
-    let mut app = App::init(&cfg).await?;
+    // Composition root: live adapters get injected here; tests and future
+    // backtests substitute TestClock / other Strategy impls.
+    let clock: Arc<dyn Clock> = Arc::new(LiveClock::default());
+    let strategy = ThresholdStrategy;
+
+    let mut app = App::init(&cfg, clock).await?;
 
     //setup account balance and spendable per token
     let mut account = Account::new().set_balance(cfg.account.balance, cfg.account.spendable);
@@ -38,6 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         app.set_cooldown(1);
     };
     let (sender, receiver) = tokio::sync::mpsc::channel(100);
+    let ws_enabled = cfg.server.as_ref().is_some_and(|s| s.enable);
 
     if let Some(server) = &cfg.server {
         if server.enable {
@@ -55,9 +61,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if cfg.ui.enable {
             app.term.move_cursor_to(0, 0)?;
         }
-        app.time.utc = Utc::now();
+        app.time.utc = app.clock.now_utc();
         let unix_timestamp = app.time.utc.timestamp();
-        app.time.now = time::Instant::now();
+        app.time.mono = app.clock.monotonic();
 
         //Retrieve and process top tokens
         app.fetch_tokens(cfg.strategy.timeframe).await?;
@@ -65,11 +71,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await?;
 
-        app.filter_invalid(&cfg.strategy, account.balance.spendable);
+        app.filter_invalid(&strategy, &cfg.strategy, &account.portfolio_view());
         app.clean_top(cfg.strategy.top).get_tickers().await?;
 
         //update timers in portfolio tokens
-        account = app.buy_tokens(account, &cfg.strategy).await?;
+        account = app.buy_tokens(account, &strategy, &cfg.strategy).await?;
 
         //update portfolio and tracked tokens
         app.update_cooldowns(&account.portfolio);
@@ -80,12 +86,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await?;
 
         //update portfolio
+        let portfolio_view = account.portfolio_view();
         for token in account.portfolio.iter_mut() {
             token
                 .update_reports(cfg.strategy.timeout)
                 .update_orders(app.exchange.enable_trading, &app.exchange.authentication)
-                .await?
-                .tag_invalid(&app.tokens, &cfg.strategy)?;
+                .await?;
+
+            let still_listed = app.tokens.iter().any(|t| t.instid == token.instid);
+            let ctx = Context {
+                clock: app.clock.as_ref(),
+                config: &cfg.strategy,
+                portfolio: &portfolio_view,
+            };
+            let decision = strategy.should_exit(&ctx, &token.position_view(still_listed));
+            token.apply_exit(decision);
         }
 
         account.balance.set_current(0.0);
@@ -94,37 +109,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await?
             .calculate_earnings();
 
-        //account = app.tag_invalid_tokens(account, &cfg.strategy)?;
         account = app.sell_tokens(account, &cfg.strategy).await?;
         account.clean_portfolio();
 
         // Websocket
-        // Only send tokens that are actively trading
-        let trading_tokens: Vec<Token> = account
-            .portfolio
-            .clone()
-            .into_iter()
-            .filter(|t| {
-                t.orders.as_ref().map_or(false, |orders| {
-                    orders.iter().any(|order| order.state == OrderState::Filled)
+        // Send state to the WS console — but only when the server (and thus
+        // `channel::transmit`, the sole consumer of this bounded channel) is
+        // running. With no consumer, the channel fills after 100 cycles and
+        // the next `send().await` parks the scheduler loop forever.
+        if ws_enabled {
+            // Only send tokens that are actively trading
+            let trading_tokens: Vec<Token> = account
+                .portfolio
+                .clone()
+                .into_iter()
+                .filter(|t| {
+                    t.orders.as_ref().map_or(false, |orders| {
+                        orders.iter().any(|order| order.state == OrderState::Filled)
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        let ws_data = ws::channel::Data {
-            tokens: trading_tokens,
-            balance: account.balance.clone(),
-            fee_spend: account.fee_spend,
-            earnings: account.earnings,
-            change: account.change,
-            ts: app.time.utc,
-        };
+            let ws_data = ws::channel::Data {
+                tokens: trading_tokens,
+                balance: account.balance.clone(),
+                fee_spend: account.fee_spend,
+                earnings: account.earnings,
+                change: account.change,
+                ts: app.time.utc,
+            };
 
-        // Send the data
-        if (sender.send(ws_data).await).is_err() {
-            app.logs
-                .push("Error sending data to transmit function".to_string());
-        };
+            if (sender.send(ws_data).await).is_err() {
+                app.logs
+                    .push("Error sending data to transmit function".to_string());
+            };
+        }
 
         // UI Display
         if cfg.ui.enable {
@@ -146,7 +165,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         app.time.uptime = app.time.uptime + app.time.elapsed;
-        app.time.elapsed = Duration::milliseconds(app.time.now.elapsed().as_millis() as i64);
+        app.time.elapsed = Duration::milliseconds(
+            app.clock
+                .monotonic()
+                .saturating_sub(app.time.mono)
+                .as_millis() as i64,
+        );
 
         if !quickstart_completed {
             app.set_cooldown(cfg.strategy.cooldown);

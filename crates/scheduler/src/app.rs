@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use console::Term;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use pushover_rs::{
     Message, MessageBuilder, PushoverResponse, PushoverSound, send_pushover_request,
 };
-use time::Instant;
 
 use crate::prelude::*;
 
 #[derive(Debug)]
 pub struct App {
+    /// The single source of time for the scheduler (hexagonal Clock port).
+    pub clock: Arc<dyn Clock>,
     pub cycles: u64,
     pub time: Time,
     pub logs: Vec<String>,
@@ -28,23 +29,25 @@ pub struct App {
 pub struct Time {
     pub started: DateTime<Utc>,
     pub utc: DateTime<Utc>,
-    pub now: Instant,
+    /// Monotonic reading taken at the start of the current cycle; spans are
+    /// measured as `clock.monotonic() - time.mono` (replaces `Instant`).
+    pub mono: time::Duration,
     pub elapsed: Duration,
     pub uptime: Duration,
 }
-impl Default for Time {
-    fn default() -> Self {
+impl Time {
+    pub fn new(clock: &dyn Clock) -> Self {
         Self {
-            started: Utc::now(),
-            utc: Utc::now(),
-            now: Instant::now(),
+            started: clock.now_utc(),
+            utc: clock.now_utc(),
+            mono: clock.monotonic(),
             elapsed: Duration::milliseconds(0),
             uptime: Duration::seconds(0),
         }
     }
 }
 impl App {
-    pub async fn init(cfg: &AppConfig) -> Result<Self> {
+    pub async fn init(cfg: &AppConfig, clock: Arc<dyn Clock>) -> Result<Self> {
         let db_uri = format!("{}:{}", cfg.database.ip, cfg.database.port);
         let session: Session = SessionBuilder::new()
             .known_node(db_uri)
@@ -58,7 +61,8 @@ impl App {
             round_id: 0,
             cycles: 0,
             cooldown: Duration::seconds(5),
-            time: Time::default(),
+            time: Time::new(clock.as_ref()),
+            clock,
             logs: Vec::new(),
             tokens: Vec::new(),
             deny_list: cfg.strategy.deny_list.clone().unwrap_or_default(),
@@ -130,15 +134,20 @@ impl App {
         }
         Ok(self)
     }
-    pub fn update_timeouts(&mut self, mut tokens: Vec<Token>, strategy: &Strategy) -> Vec<Token> {
+    pub fn update_timeouts(
+        &mut self,
+        mut tokens: Vec<Token>,
+        config: &StrategyConfig,
+    ) -> Vec<Token> {
+        let now = self.clock.now_utc();
         self.tokens.iter().for_each(|s| {
             if let Some(token) = tokens.iter_mut().find(|t| t.instid == s.instid) {
                 if token
                     .candlesticks
                     .last()
-                    .unwrap_or(&Candlestick::new(token.price))
+                    .unwrap_or(&Candlestick::new(token.price, now))
                     .change
-                    > strategy.min_change as f64
+                    > config.min_change as f64
                 {
                     token.timeout = token.config.timeout
                 }
@@ -151,14 +160,14 @@ impl App {
             };
 
             if t.change == 0.0 && t.timeout.num_seconds() <= 0 {
-                t.timeout = Duration::seconds(strategy.timeout)
+                t.timeout = Duration::seconds(config.timeout)
             };
         }
         tokens
     }
 
-    pub async fn save_strategy(&self, strategy: &Strategy) -> Result<()> {
-        let payload = serde_json::to_string_pretty(&strategy)?;
+    pub async fn save_strategy(&self, config: &StrategyConfig) -> Result<()> {
+        let payload = serde_json::to_string_pretty(&config)?;
         let query = format!("INSERT INTO okx.strategies JSON '{}'", payload);
         self.db_session.query_unpaged(&*query, &[]).await?;
         Ok(())
@@ -216,7 +225,8 @@ impl App {
                     .await?;
                 let rows_result = result.into_rows_result()?;
                 for row in rows_result.rows::<Candlestick>()? {
-                    let candle = row.unwrap_or(Candlestick::new(token.price));
+                    let candle =
+                        row.unwrap_or_else(|_| Candlestick::new(token.price, self.clock.now_utc()));
                     token.add_or_update_candle(candle)
                 }
 
@@ -255,15 +265,19 @@ impl App {
                     a.ts.partial_cmp(&b.ts)
                         .expect("unable to compare timestamps")
                 });
-                let mut last_candle =
-                    Candlestick::from_tickers(&token.instid, &tickers).unwrap_or_default();
-                if last_candle.change == 0.0 {
-                    last_candle.open = token.price;
-                    last_candle.high = token.price;
-                    last_candle.low = token.price;
-                    last_candle.close = token.price;
+                if let Some(mut last_candle) =
+                    Candlestick::from_tickers(&token.instid, &tickers, self.clock.now_utc())
+                {
+                    if last_candle.change == 0.0 {
+                        last_candle.open = token.price;
+                        last_candle.high = token.price;
+                        last_candle.low = token.price;
+                        last_candle.close = token.price;
+                    }
+                    token.add_or_update_candle(last_candle);
                 }
-                token.add_or_update_candle(last_candle);
+                // If tickers were empty, skip appending. Strategy evaluates against
+                // the last completed candles pulled from Scylla in the block above.
 
                 while token.candlesticks.len() > timeframe as usize {
                     token.candlesticks.remove(0);
@@ -285,14 +299,44 @@ impl App {
     pub async fn buy_tokens(
         &mut self,
         mut account: Account,
-        strategy: &Strategy,
+        strategy: &dyn Strategy,
+        config: &StrategyConfig,
     ) -> Result<Account> {
         //Add to portfolio first
+        let mut entry_sizes: HashMap<String, f64> = HashMap::new();
         for token in self.tokens.iter_mut() {
             if token.cooldown <= Duration::milliseconds(0)
                 && !account.portfolio.iter().any(|p| token.instid == p.instid)
             {
-                account.add_token(token, strategy);
+                let portfolio_view = account.portfolio_view();
+                let ctx = Context {
+                    clock: self.clock.as_ref(),
+                    config,
+                    portfolio: &portfolio_view,
+                };
+                let denied = self
+                    .deny_list
+                    .iter()
+                    .any(|i| format!("{}-USDT", i) == token.instid);
+
+                // Tokens here already passed `should_enter` in
+                // `filter_invalid` and none of its inputs change in between,
+                // so this re-evaluation always agrees; it exists to source
+                // the position size from the strategy rather than hardcode it.
+                match strategy.should_enter(&ctx, &token.entry_view(denied)) {
+                    EnterDecision::Enter { size_quote } => {
+                        account.add_token(token, config);
+                        entry_sizes.insert(token.instid.clone(), size_quote);
+                    },
+                    EnterDecision::Skip(reason) => {
+                        log::debug!(
+                            "[{}] entry skipped by {}: {}",
+                            token.instid,
+                            strategy.name(),
+                            reason
+                        );
+                    },
+                }
                 token.cooldown = self.cooldown;
             }
         }
@@ -306,15 +350,23 @@ impl App {
                 .any(|o| o.side == Side::Buy && o.state != OrderState::Cancelled);
 
             if !buy_orders {
-                t.balance.start = account.balance.spendable / t.price;
-                t.configure_from_report(strategy, &self.db_session).await;
+                // Fresh entries are sized by the strategy's decision;
+                // re-buys after a cancelled order (no fresh decision this
+                // cycle) keep the original sizing rule, which is the same
+                // value under ThresholdStrategy.
+                let size_quote = entry_sizes
+                    .remove(&t.instid)
+                    .unwrap_or(account.balance.spendable);
+                t.balance.start = size_quote / t.price;
+                t.configure_from_report(config, &self.db_session).await;
 
                 {
                     let order = t
                         .buy(
                             self.exchange.enable_trading,
                             account.authentication.clone(),
-                            strategy,
+                            config,
+                            self.clock.now_utc(),
                         )
                         .await?
                         .orders
@@ -328,29 +380,12 @@ impl App {
                     self.round_id += 1;
                 }
 
-                t.report = Report::new(self.round_id, &strategy.hash, t);
+                t.report = Report::new(self.round_id, &config.hash, t, self.clock.now_utc());
             }
         }
         Ok(account)
     }
 
-    pub fn tag_invalid_tokens(
-        &mut self,
-        mut account: Account,
-        strategy: &Strategy,
-    ) -> Result<Account> {
-        for t in account.portfolio.iter_mut() {
-            let found = self.tokens.iter().any(|s| t.instid == s.instid);
-            if t.status == token::Status::Trading {
-                t.exit_reason = t.get_exit_reason(strategy, found);
-            }
-            if t.exit_reason.is_some() {
-                t.status = token::Status::Selling;
-                t.report.reason = t.exit_reason.as_ref().unwrap().to_string();
-            }
-        }
-        Ok(account)
-    }
     pub fn build_order_log(&self, order: &Order) -> String {
         format!(
             "[{timestamp}] {side} Order {state} for [{token}] > Type {ord_type} - price: {price} - size: {size} | Response: {response} | id: {order_id}",
@@ -378,7 +413,7 @@ impl App {
     pub async fn sell_tokens(
         &mut self,
         mut account: Account,
-        strategy: &Strategy,
+        config: &StrategyConfig,
     ) -> Result<Account> {
         for t in account.portfolio.iter_mut() {
             let filled_orders_amount: f64 = t
@@ -413,7 +448,8 @@ impl App {
                         .sell(
                             self.exchange.enable_trading,
                             account.authentication.clone(),
-                            strategy,
+                            config,
+                            self.clock.now_utc(),
                         )
                         .await?
                         .orders
@@ -434,7 +470,7 @@ impl App {
 
                 //deny tokens to be bought again
                 if t.exit_reason == Some(ExitReason::Stoploss)
-                    && strategy.avoid_after_stoploss
+                    && config.avoid_after_stoploss
                     && !denied
                 {
                     self.deny_list.push(t.instid.replace("-USDT", ""))
@@ -459,14 +495,39 @@ impl App {
         Ok(account)
     }
 
-    pub fn filter_invalid(&mut self, strategy: &Strategy, spendable: f64) -> &mut Self {
-        let deny_list = self.deny_list.clone();
-        self.tokens
-            .retain(|t| t.is_valid(&deny_list, strategy, spendable));
-        self.tokens.sort_by(|b, a| {
-            b.std_deviation
+    /// Keeps only tokens the strategy would enter. The threshold checks that
+    /// used to live in `Token::is_valid` now run behind `should_enter`.
+    pub fn filter_invalid(
+        &mut self,
+        strategy: &dyn Strategy,
+        config: &StrategyConfig,
+        portfolio: &PortfolioView,
+    ) -> &mut Self {
+        let ctx = Context {
+            clock: self.clock.as_ref(),
+            config,
+            portfolio,
+        };
+        let deny_list = &self.deny_list;
+        self.tokens.retain(|t| {
+            let denied = deny_list.iter().any(|i| format!("{}-USDT", i) == t.instid);
+            match strategy.should_enter(&ctx, &t.entry_view(denied)) {
+                EnterDecision::Enter { .. } => true,
+                EnterDecision::Skip(reason) => {
+                    log::debug!("[{}] filtered by {}: {}", t.instid, strategy.name(), reason);
+                    false
+                },
+            }
+        });
+        // Descending sort by `change` (highest momentum first). Was
+        // comparing `b.std_deviation` to `a.change` — two different fields,
+        // which isn't a total order and panics in `smallsort` since Rust
+        // 1.81 validates comparators. NaN falls to `Equal` so a bad tick
+        // can't take the loop down.
+        self.tokens.sort_by(|a, b| {
+            b.change
                 .partial_cmp(&a.change)
-                .expect("unable to compare change")
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         self
     }

@@ -12,13 +12,25 @@ use std::{
 use exchange_observer::AppConfig;
 use log::info;
 use scylla::client::session::Session as DbSession;
-use tokio::{sync::Mutex, time::interval};
+use tokio::time::interval;
 
 /// How often to log throughput / catch-up stats.
 const STATS_INTERVAL: Duration = Duration::from_secs(5);
 
-/// (current_offset, latest_watermark) per topic, updated as inserts land.
-pub type OffsetMap = HashMap<String, (i64, i64)>;
+/// Live consumption progress for one (topic, partition) stream.
+///
+/// `current` is the next offset to consume (last seen offset + 1);
+/// `latest` is the live high watermark reported by the broker with each
+/// batch. Both are written by the stream adapter in `mq::init_streams` as
+/// records flow — relaxed atomics, no locks on the hot path.
+pub struct PartitionProgress {
+    pub current: AtomicI64,
+    pub latest: AtomicI64,
+}
+
+/// Per-topic partition progress. The map structure is immutable after boot;
+/// only the atomic leaves change.
+pub type OffsetMap = HashMap<String, Vec<Arc<PartitionProgress>>>;
 
 /// Runtime counters. Hot-path fields are atomics — no locks per message.
 pub struct Stats {
@@ -30,8 +42,8 @@ pub struct Stats {
     pub errors: AtomicI64,
     /// Total messages waiting between start-offset and high-watermark at boot.
     pub backlog_at_start: AtomicI64,
-    /// Per-topic offset tracking. Locked once per stats tick, not per message.
-    pub offsets: Mutex<OffsetMap>,
+    /// Per-topic, per-partition offset tracking (see [`PartitionProgress`]).
+    pub offsets: OffsetMap,
 }
 
 impl Stats {
@@ -41,7 +53,7 @@ impl Stats {
             inserted: AtomicI64::new(0),
             errors: AtomicI64::new(0),
             backlog_at_start: AtomicI64::new(backlog),
-            offsets: Mutex::new(offsets),
+            offsets,
         }
     }
 }
@@ -55,10 +67,18 @@ pub async fn run_stats_logger(stats: Arc<Stats>, session: Arc<DbSession>, cfg: A
     ticker.tick().await; // consume immediate first tick
 
     let mut last_inserted: i64 = 0;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "throughput measurement in an infra binary, not decision logic"
+    )]
     let mut last_tick = Instant::now();
 
     loop {
         ticker.tick().await;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "throughput measurement in an infra binary, not decision logic"
+        )]
         let now = Instant::now();
         let elapsed = now.duration_since(last_tick).as_secs_f64().max(0.001);
         last_tick = now;
@@ -72,18 +92,23 @@ pub async fn run_stats_logger(stats: Arc<Stats>, session: Arc<DbSession>, cfg: A
         last_inserted = inserted;
         let ack_rate = (delta as f64 / elapsed).round() as i64;
 
-        // Per-topic lag report.
-        {
-            let offsets = stats.offsets.lock().await;
-            for topic in &cfg.mq.topics {
-                if let Some(&(current, latest)) = offsets.get(&topic.name) {
-                    let diff = latest - current;
-                    if diff > 1000 {
-                        info!(
-                            "Syncing topic [{}] {current}/{latest} || {diff} messages left",
-                            topic.name
-                        );
-                    }
+        // Per-topic lag report: sum the live per-partition positions.
+        for topic in &cfg.mq.topics {
+            if let Some(partitions) = stats.offsets.get(&topic.name) {
+                let current: i64 = partitions
+                    .iter()
+                    .map(|p| p.current.load(Ordering::Relaxed))
+                    .sum();
+                let latest: i64 = partitions
+                    .iter()
+                    .map(|p| p.latest.load(Ordering::Relaxed))
+                    .sum();
+                let diff = latest - current;
+                if diff > 1000 {
+                    info!(
+                        "Syncing topic [{}] {current}/{latest} || {diff} messages left",
+                        topic.name
+                    );
                 }
             }
         }

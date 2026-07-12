@@ -1,5 +1,3 @@
-use exchange_observer::{Authentication, Strategy};
-
 use crate::prelude::*;
 
 #[derive(Serialize, Debug, Clone)]
@@ -137,12 +135,13 @@ impl Account {
                                 Side::Sell => {
                                     t.balance.current -= size;
                                     self.balance.available += token_balance_after_fees * price;
-                                    app.logs.push(t.report.to_string());
+                                    app.logs.push(t.report.log_line(app.clock.now_utc()));
                                 },
                             }
                             self.trades += 1;
                             self.fee_spend += usdt_taker_fee;
-                            t.buy_ts = Duration::milliseconds(Utc::now().timestamp_millis());
+                            t.buy_ts =
+                                Duration::milliseconds(app.clock.now_utc().timestamp_millis());
                         },
                         _ => {},
                     };
@@ -159,6 +158,15 @@ impl Account {
         self.balance.current += self.balance.available + open_order_value + token_balances;
         self.change = get_percentage_diff(self.balance.current, self.balance.start) as f32;
         Ok(self)
+    }
+
+    /// Read-only snapshot of account state for the strategy boundary.
+    pub fn portfolio_view(&self) -> PortfolioView {
+        PortfolioView {
+            available: self.balance.available,
+            spendable: self.balance.spendable,
+            positions: self.portfolio.len(),
+        }
     }
 
     pub fn calculate_earnings(&mut self) -> &mut Self {
@@ -194,9 +202,9 @@ impl Account {
         self
     }
 
-    pub fn add_token(&mut self, token: &Token, strategy: &Strategy) -> &Self {
+    pub fn add_token(&mut self, token: &Token, config: &StrategyConfig) -> &Self {
         if self.balance.available >= self.balance.spendable
-            && self.portfolio.len() < strategy.portfolio_size as usize
+            && self.portfolio.len() < config.portfolio_size as usize
         {
             let mut t = Token::new(&token.instid);
             t.price = token.price;

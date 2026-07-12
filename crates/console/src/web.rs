@@ -1,17 +1,30 @@
+//! WASM entry point.
+
 use eframe::wasm_bindgen::{self, prelude::*};
 
-/// This is the entry-point for all the web-assembly.
-/// This is called once from the HTML.
-/// It loads the app, installs some callbacks, then returns.
-/// You can add more callbacks like this if you want to call in to your code.
+/// Called once from JavaScript to boot the app.
 #[wasm_bindgen]
-pub async fn start(canvas_id: &str) -> std::result::Result<(), eframe::wasm_bindgen::JsValue> {
-    // Redirect `log` message to `console.log` and friends:
+pub async fn start(canvas_id: &str) -> Result<(), wasm_bindgen::JsValue> {
+    // Route `log` messages to the browser console.
     eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+
+    // Resolve the canvas element the app should render into.
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str("no document"))?;
+    let canvas = document
+        .get_element_by_id(canvas_id)
+        .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        .ok_or_else(|| {
+            wasm_bindgen::JsValue::from_str(&format!("canvas #{canvas_id} not found"))
+        })?;
 
     let app = crate::Console::default();
     eframe::WebRunner::new()
-        .start(canvas_id, Default::default(), Box::new(|_cc| Box::new(app)))
-        .await?;
-    Ok(())
+        .start(
+            canvas,
+            eframe::WebOptions::default(),
+            Box::new(|_cc| Ok(Box::new(app))),
+        )
+        .await
 }

@@ -1,12 +1,16 @@
-pub use std::{error::Error, str::FromStr, time};
+pub use std::{error::Error, str::FromStr, sync::Arc, time};
 
 pub use anyhow::Result;
 pub use chrono::{
     DateTime, Duration, NaiveDateTime, SecondsFormat, TimeDelta, TimeZone, Timelike, Utc,
 };
-pub use exchange_observer::{
-    AppConfig, Authentication, Exchange, OffsetDateTime, Pushover, Strategy,
+// `Strategy` is now the engine's strategy *trait*; the threshold config bag
+// from `lib` (formerly imported here as `Strategy`) is `StrategyConfig`.
+pub use engine::{
+    Candle, Clock, Context, EnterDecision, ExitDecision, LiveClock, PortfolioView, PositionView,
+    Strategy, StrategyConfig, ThresholdStrategy, TokenView,
 };
+pub use exchange_observer::{AppConfig, Authentication, Exchange, OffsetDateTime, Pushover};
 pub use scylla::{
     client::{session::Session, session_builder::SessionBuilder, Compression},
     response::query_result::QueryResult,

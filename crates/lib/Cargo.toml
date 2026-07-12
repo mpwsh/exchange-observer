@@ -20,3 +20,4 @@ time = { version = "0.3.20", features = ["serde-human-readable", "macros"] }
 thiserror = "1.0.40"
 base64 = "0.22.0"
 secrecy = { version = "0.8", features = ["serde"] }
+scylla = "1.7"

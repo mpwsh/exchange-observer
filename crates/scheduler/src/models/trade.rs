@@ -60,15 +60,10 @@ impl FromStr for OrderState {
     }
 }
 
-#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub enum ExitReason {
-    Stoploss,
-    LowVolume,
-    LowChange,
-    FloorReached,
-    Timeout,
-    Cashout,
-}
+// Moved to `engine`: exit reasons are part of the Strategy port's decision
+// vocabulary. Re-exported here so existing `trade::ExitReason` paths and the
+// serialized wire format stay unchanged.
+pub use engine::ExitReason;
 #[derive(Eq, PartialEq, Debug, Default, Serialize, Deserialize, Clone)]
 pub enum Side {
     #[default]
@@ -95,35 +90,6 @@ impl FromStr for Side {
         }
     }
 }
-impl ToString for ExitReason {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Stoploss => "stoploss".to_string(),
-            Self::LowVolume => "low_volume".to_string(),
-            Self::LowChange => "low_change".to_string(),
-            Self::FloorReached => "floor_reached".to_string(),
-            Self::Timeout => "timeout".to_string(),
-            Self::Cashout => "cashout".to_string(),
-        }
-    }
-}
-
-impl FromStr for ExitReason {
-    type Err = ();
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let lower = input.to_lowercase();
-        match lower.as_ref() {
-            "stoploss" => Ok(Self::Stoploss),
-            "low_volume" => Ok(Self::LowVolume),
-            "low_change" => Ok(Self::LowChange),
-            "floor_reached" => Ok(Self::FloorReached),
-            "timeout" => Ok(Self::Timeout),
-            "cashout" => Ok(Self::Cashout),
-            _ => Err(()),
-        }
-    }
-}
-
 impl Order {
     pub fn new(
         instid: &str,
@@ -132,6 +98,7 @@ impl Order {
         side: Side,
         ord_type: &str,
         strategy: &str,
+        now: DateTime<Utc>,
     ) -> Self {
         Self {
             id: String::new(),
@@ -146,13 +113,17 @@ impl Order {
             response: None,
             prev_state: OrderState::Created,
             state: OrderState::Live,
-            ts: Utc::now().timestamp_millis().to_string(),
+            ts: now.timestamp_millis().to_string(),
         }
     }
 
     pub async fn get_state(&self, auth: &Authentication) -> Result<trade::OrderState> {
         let inst_id = self.inst_id.clone();
         let query = &format!("?ordId={ord_id}&instId={inst_id}", ord_id = self.id);
+        // Exchange request signing deliberately reads real wall time: HMAC
+        // timestamps must be true or the exchange rejects the request. This
+        // is the execution boundary (future `Executor` port), outside the
+        // Clock abstraction and outside the disallowed-methods list.
         let signed = auth.sign(
             "GET",
             ORDERS_ENDPOINT,

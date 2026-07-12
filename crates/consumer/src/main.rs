@@ -1,14 +1,19 @@
-//! Consumer binary: drains Redpanda topics into Scylla.
+//! Consumer binary: drains Redpanda topics into Scylla using typed columns.
+//!
+//! Key change from v1: instead of `INSERT ... JSON ?` (which makes Scylla
+//! parse a JSON string server-side on every write), we prepare per-channel
+//! `INSERT ... (cols...) VALUES (?, ?, ...)` statements and bind typed
+//! primitives directly. That skips the JSON parse and typically gives 2-3x
+//! insert throughput.
 
 use std::{
     collections::HashMap,
     sync::{Arc, atomic::Ordering},
+    time::Duration,
 };
 
-use tokio::time::{Duration, timeout};
-
 use anyhow::Context;
-use exchange_observer::AppConfig;
+use exchange_observer::{AppConfig, models::*};
 use futures::StreamExt;
 use log::{error, info, warn};
 use rskafka::client::ClientBuilder;
@@ -17,7 +22,10 @@ use scylla::{
     statement::prepared::PreparedStatement,
 };
 use stream_throttle::{ThrottlePool, ThrottleRate, ThrottledStream};
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::Semaphore,
+    time::{Duration as TokioDuration, timeout},
+};
 
 use crate::{
     error::{ConsumerError, Result},
@@ -28,14 +36,18 @@ pub mod error;
 pub mod mq;
 pub mod stats;
 
-/// Max in-flight inserts. Bounds memory and gives the driver room to pipeline
-/// without letting a slow database create unbounded backlog.
 const MAX_INFLIGHT_INSERTS: usize = 512;
-
-/// Throttle: at most this many messages/sec pulled off the Kafka streams.
-/// The old value was 50k/sec — kept the same because the local Scylla can
-/// keep up with it in dev; adjust down if you saturate the DB.
 const THROTTLE_RATE_PER_SEC: usize = 50_000;
+
+/// One prepared statement per channel. Kept together so lookups on the hot
+/// path are one branch, not a HashMap read.
+struct PreparedStmts {
+    tickers: Arc<PreparedStatement>,
+    candle1m: Arc<PreparedStatement>,
+    trades: Arc<PreparedStatement>,
+    books: Arc<PreparedStatement>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cfg = AppConfig::load().context("loading AppConfig")?;
@@ -55,16 +67,21 @@ async fn main() -> anyhow::Result<()> {
         info!("skip_schema_agreement=true; skipping check");
     } else {
         info!("Waiting for schema agreement (max 10s)...");
-        match timeout(Duration::from_secs(10), session.await_schema_agreement()).await {
+        match timeout(
+            TokioDuration::from_secs(10),
+            session.await_schema_agreement(),
+        )
+        .await
+        {
             Ok(Ok(_)) => info!("Schema in agreement"),
             Ok(Err(e)) => warn!("Schema agreement returned error (continuing anyway): {e}"),
             Err(_) => warn!("Schema agreement timed out after 10s (continuing anyway)"),
         }
     }
 
-    info!("Building prepared statements...");
+    info!("Preparing typed insert statements...");
     let prepared = build_prepared_statements(&session, &cfg).await?;
-    info!("Prepared {} INSERT statements", prepared.len());
+    info!("Prepared 4 typed insert statements");
 
     let broker = format!("{}:{}", cfg.mq.ip, cfg.mq.port);
     info!("Connecting to message queue at {broker}");
@@ -76,16 +93,14 @@ async fn main() -> anyhow::Result<()> {
     let (streams, initial_stats) = mq::init_streams(&kafka, &cfg).await?;
     let stats = Arc::new(initial_stats);
 
-    // Kick off the periodic stats logger. It reads only atomics and one mutex,
-    // outside the hot path.
     let stats_logger = tokio::spawn(stats::run_stats_logger(
         Arc::clone(&stats),
         Arc::clone(&session),
         cfg.clone(),
     ));
 
-    // Bounded concurrency for inserts.
     let insert_permits = Arc::new(Semaphore::new(MAX_INFLIGHT_INSERTS));
+    let prepared = Arc::new(prepared);
 
     let rate = ThrottleRate::new(THROTTLE_RATE_PER_SEC, Duration::from_millis(1000));
     let pool = ThrottlePool::new(rate);
@@ -93,10 +108,8 @@ async fn main() -> anyhow::Result<()> {
     let mut merged = futures::stream::select_all(streams).throttle(pool);
 
     while let Some(item) = merged.next().await {
-        let (record, _partition_offset) = match item {
-            Ok((record_and_offset, _high_watermark)) => {
-                (record_and_offset.record, record_and_offset.offset)
-            },
+        let record = match item {
+            Ok((record_and_offset, _high_watermark)) => record_and_offset.record,
             Err(e) => {
                 warn!("Error reading from kafka stream: {e}");
                 continue;
@@ -105,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
         if let Err(e) = dispatch_record(
             record,
-            &prepared,
+            Arc::clone(&prepared),
             Arc::clone(&session),
             Arc::clone(&stats),
             Arc::clone(&insert_permits),
@@ -121,41 +134,48 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Prepare one INSERT-JSON statement per configured channel. Called once at
-/// startup; the returned map is `Arc<PreparedStatement>` per channel name so
-/// clones on the hot path are cheap ref bumps.
-async fn build_prepared_statements(
-    session: &DbSession,
-    cfg: &AppConfig,
-) -> Result<HashMap<String, Arc<PreparedStatement>>> {
-    let keyspace = &cfg.database.keyspace;
+/// Prepare four typed INSERT statements — one per table shape.
+async fn build_prepared_statements(session: &DbSession, cfg: &AppConfig) -> Result<PreparedStmts> {
+    let ks = &cfg.database.keyspace;
     let ttl = cfg.database.data_ttl;
-    let mut out = HashMap::new();
 
-    for topic in &cfg.mq.topics {
-        let cql = format!(
-            "INSERT INTO {keyspace}.{name} JSON ? USING TTL {ttl}",
-            name = topic.name
-        );
-        info!("Preparing: {cql}");
-        let prepared = session.prepare(cql).await?;
-        info!("Prepared: {}", topic.name);
-        out.insert(topic.name.clone(), Arc::new(prepared));
-    }
-    info!("All prepared statements built");
-    Ok(out)
+    let tickers_cql = format!(
+        "INSERT INTO {ks}.tickers \
+         (instid, askpx, asksz, bidpx, bidsz, high24h, last, lastsz, \
+          low24h, open24h, sodutc0, sodutc8, ts, vol24h, volccy24h) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL {ttl}"
+    );
+    let candle_cql = format!(
+        "INSERT INTO {ks}.candle1m \
+         (instid, open, high, low, close, volume, change, range, ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL {ttl}"
+    );
+    let trades_cql = format!(
+        "INSERT INTO {ks}.trades \
+         (instid, sz, tradeid, px, side, ts) \
+         VALUES (?, ?, ?, ?, ?, ?) USING TTL {ttl}"
+    );
+    let books_cql = format!(
+        "INSERT INTO {ks}.books \
+         (instid, asks, bids, checksum, prev_seq_id, seq_id, ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL {ttl}"
+    );
+
+    Ok(PreparedStmts {
+        tickers: Arc::new(session.prepare(tickers_cql).await?),
+        candle1m: Arc::new(session.prepare(candle_cql).await?),
+        trades: Arc::new(session.prepare(trades_cql).await?),
+        books: Arc::new(session.prepare(books_cql).await?),
+    })
 }
 
-/// Extract the channel + payload from one Kafka record and hand it off to an
-/// insert task under the semaphore's backpressure.
 async fn dispatch_record(
     record: rskafka::record::Record,
-    prepared: &HashMap<String, Arc<PreparedStatement>>,
+    prepared: Arc<PreparedStmts>,
     session: Arc<DbSession>,
     stats: Arc<Stats>,
     permits: Arc<Semaphore>,
 ) -> Result<()> {
-    use exchange_observer::models::Channel;
     use std::str::FromStr;
 
     let channel_bytes = record
@@ -166,11 +186,6 @@ async fn dispatch_record(
         .map_err(|_| ConsumerError::UnknownChannel("<non-utf8>".to_owned()))?;
     let channel = Channel::from_str(channel_str)
         .map_err(|_| ConsumerError::UnknownChannel(channel_str.to_owned()))?;
-
-    let stmt = prepared
-        .get(channel_str)
-        .cloned()
-        .ok_or_else(|| ConsumerError::UnknownChannel(channel_str.to_owned()))?;
 
     let key = record
         .key
@@ -185,34 +200,30 @@ async fn dispatch_record(
         .as_deref()
         .ok_or(ConsumerError::MissingField("record.value"))?;
 
+    // Parse into a typed variant. This is where JSON → f64/i64 happens —
+    // once, in Rust, instead of on every Scylla insert.
     let payload = channel
         .parse(value, &inst_id)
         .map_err(|e| ConsumerError::PayloadParse {
             channel: channel_str.to_owned(),
-            source: anyhow::anyhow!("{e:?}"),
+            source: e,
         })?;
 
-    // Track offsets — cheap: single atomic increment.
     stats.received.fetch_add(1, Ordering::Relaxed);
 
-    // Acquire a permit; blocks (async-waits) if MAX_INFLIGHT_INSERTS is
-    // reached. This is the backpressure — the read loop stops pulling from
-    // Kafka until the DB catches up.
     let permit = match permits.acquire_owned().await {
         Ok(p) => p,
         Err(_) => {
-            // Semaphore was closed. We don't close it anywhere, but be
-            // defensive and drop the record instead of panicking.
             error!("Insert semaphore closed unexpectedly; dropping record");
             return Ok(());
         },
     };
 
     tokio::spawn(async move {
-        let _permit = permit; // drop at end of task = release backpressure slot
-        match session.execute_unpaged(&stmt, (payload,)).await {
-            Ok(result) => {
-                let warnings = result.warnings().collect::<Vec<_>>();
+        let _permit = permit;
+        let result = insert_payload(&session, &prepared, &payload).await;
+        match result {
+            Ok(warnings) => {
                 if !warnings.is_empty() {
                     warn!("Scylla warnings: {warnings:?}");
                 }
@@ -227,3 +238,38 @@ async fn dispatch_record(
 
     Ok(())
 }
+
+/// Dispatch to the correct prepared statement with the typed row tuple.
+///
+/// Each arm binds a channel-specific tuple (see `models.rs::*Row` type
+/// aliases) — no HashMap lookup, no JSON parse, one branch.
+async fn insert_payload(
+    session: &DbSession,
+    prepared: &PreparedStmts,
+    payload: &RowPayload,
+) -> Result<Vec<String>> {
+    let result = match payload {
+        RowPayload::Ticker { inst_id, row } => {
+            session
+                .execute_unpaged(&prepared.tickers, row.to_row(inst_id))
+                .await?
+        },
+        RowPayload::Candle { inst_id, row } => {
+            session
+                .execute_unpaged(&prepared.candle1m, row.to_row(inst_id))
+                .await?
+        },
+        RowPayload::Trade { inst_id, row } => {
+            session
+                .execute_unpaged(&prepared.trades, row.to_row(inst_id))
+                .await?
+        },
+        RowPayload::Book { inst_id, row } => {
+            session
+                .execute_unpaged(&prepared.books, row.to_row(inst_id))
+                .await?
+        },
+    };
+    Ok(result.warnings().map(|s| s.to_owned()).collect())
+}
+

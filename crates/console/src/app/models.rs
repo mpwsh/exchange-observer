@@ -1,3 +1,9 @@
+//! Wire format models for the scheduler → console websocket protocol.
+//!
+//! Each websocket message is a `TextMsg` envelope (see app.rs) whose `data`
+//! field is a JSON-encoded payload of one of these types, keyed by the
+//! sibling `channel` field.
+
 use chrono::Duration;
 use serde::Deserialize;
 
@@ -46,7 +52,6 @@ pub struct Token {
     pub candlesticks: Vec<Candlestick>,
     pub status: String,
     pub config: Config,
-    //pub orders: Option<String>,
     pub exit_reason: Option<String>,
 }
 
@@ -57,6 +62,7 @@ pub struct Config {
     #[serde_as(as = "serde_with::DurationSeconds<i64>")]
     pub timeout: Duration,
 }
+
 #[serde_with::serde_as]
 #[derive(Deserialize, Debug, Clone)]
 pub struct Candlestick {

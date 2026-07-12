@@ -34,17 +34,19 @@ impl Default for Report {
             change: 0.0,
             time_left: 0,
             strategy: String::new(),
-            ts: Utc::now().timestamp().to_string(),
+            // Placeholder: every live report is rebuilt via `Report::new`
+            // before it is read or saved, so no ambient time is needed here.
+            ts: String::from("0"),
         }
     }
 }
 impl Report {
-    pub fn new(round_id: u64, strategy_hash: &str, t: &Token) -> Self {
+    pub fn new(round_id: u64, strategy_hash: &str, t: &Token, now: DateTime<Utc>) -> Self {
         Self {
             round_id,
             reason: "None".to_string(),
             instid: t.instid.clone(),
-            ts: Utc::now().timestamp_millis().to_string(),
+            ts: now.timestamp_millis().to_string(),
             buy_price: t.price,
             strategy: strategy_hash.to_string(),
             change: t.change,
@@ -62,11 +64,15 @@ impl Report {
         Ok(db_session.query_unpaged(&*query, &[]).await?)
     }
 }
-impl ToString for Report {
-    fn to_string(&self) -> String {
+impl Report {
+    /// Renders the report as a log line. `now` is the fallback timestamp for
+    /// reports whose `ts` does not parse (which, since `ts` is stored as unix
+    /// millis but parsed with a datetime format, is currently every report —
+    /// preserved as-is from the original `ToString` impl).
+    pub fn log_line(&self, now: DateTime<Utc>) -> String {
         let timestamp = match DateTime::parse_from_str(&self.ts, "%Y-%m-%d %H:%M:%S") {
             Ok(t) => t.with_timezone(&Utc),
-            Err(_) => Utc::now(),
+            Err(_) => now,
         };
 
         format!(
