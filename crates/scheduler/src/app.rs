@@ -23,6 +23,21 @@ pub struct App {
     pub exchange: Exchange,
     pub deny_list: Vec<String>,
     pub db_session: Arc<Session>,
+    /// If set, closed reports are fanned out through this channel to the
+    /// WS transmit task. `None` when the console/server is disabled.
+    pub report_tx: Option<tokio::sync::mpsc::Sender<crate::ws::channel::Data>>,
+    /// Round-ids we've already emitted report events for this session.
+    /// The `sell_tokens` guard re-fires every cycle while a token is in
+    /// `Selling` status with an unfilled sell order; Scylla dedups on the
+    /// primary key so the DB stays clean, but the WS stream would show N
+    /// duplicates. Simple set keeps emit idempotent.
+    pub emitted_reports: std::collections::HashSet<u64>,
+    /// Precision + minimum-size metadata for every spot instrument,
+    /// fetched from OKX at startup. Order construction rounds size to
+    /// `lot_sz` and price to `tick_sz` per instrument. Missing entries
+    /// fall back to `InstrumentMeta::UNKNOWN`, which is the pre-rounding
+    /// behavior — safe when OKX is unreachable at boot.
+    pub instruments: std::collections::HashMap<String, InstrumentMeta>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +72,48 @@ impl App {
         session.use_keyspace(&cfg.database.keyspace, false).await?;
         let session = Arc::new(session);
 
+        // Fetch instrument precision metadata once. On failure we still
+        // boot with an empty map — order construction falls back to
+        // InstrumentMeta::UNKNOWN, which preserves pre-rounding behavior.
+        // Better to run without rounding than not run at all.
+        let instruments = match crate::okx::fetch_spot_instruments().await {
+            Ok(list) => {
+                let mut map = std::collections::HashMap::with_capacity(list.len());
+                let mut skipped = 0usize;
+                for raw in list {
+                    // Only trade live instruments; parked ones would just
+                    // clutter the map. Also skip if any critical field
+                    // failed to parse — safer than 0.0 defaults that
+                    // could imply "no lot size" when the real meaning is
+                    // "malformed response".
+                    if raw.state != "live" {
+                        continue;
+                    }
+                    let (Ok(lot_sz), Ok(tick_sz), Ok(min_sz)) = (
+                        raw.lot_sz.parse::<f64>(),
+                        raw.tick_sz.parse::<f64>(),
+                        raw.min_sz.parse::<f64>(),
+                    ) else {
+                        skipped += 1;
+                        continue;
+                    };
+                    map.insert(raw.inst_id, InstrumentMeta { lot_sz, tick_sz, min_sz });
+                }
+                log::info!(
+                    "Loaded precision metadata for {} instruments ({} skipped)",
+                    map.len(),
+                    skipped
+                );
+                map
+            },
+            Err(e) => {
+                log::warn!(
+                    "Could not fetch OKX instruments ({e}); orders will use raw f64 precision"
+                );
+                std::collections::HashMap::new()
+            },
+        };
+
         Ok(App {
             round_id: 0,
             cycles: 0,
@@ -70,6 +127,10 @@ impl App {
             term: Term::stdout(),
             pushover: cfg.pushover.clone().unwrap_or_default(),
             db_session: session,
+            // Wired later in main() if the WS server is enabled.
+            report_tx: None,
+            emitted_reports: std::collections::HashSet::new(),
+            instruments,
         })
     }
     pub async fn send_notifications(&self, account: &Account) -> Result<()> {
@@ -134,11 +195,7 @@ impl App {
         }
         Ok(self)
     }
-    pub fn update_timeouts(
-        &mut self,
-        mut tokens: Vec<Token>,
-        config: &StrategyConfig,
-    ) -> Vec<Token> {
+    pub fn update_timeouts(&mut self, mut tokens: Vec<Token>, config: &StrategyConfig) -> Vec<Token> {
         let now = self.clock.now_utc();
         self.tokens.iter().for_each(|s| {
             if let Some(token) = tokens.iter_mut().find(|t| t.instid == s.instid) {
@@ -265,6 +322,13 @@ impl App {
                     a.ts.partial_cmp(&b.ts)
                         .expect("unable to compare timestamps")
                 });
+                // If tickers came back with data for the in-progress minute,
+                // fold it in. If tickers are empty, DON'T synthesize a blank
+                // candle — appending vol=0 change=0 poisons the strategy's
+                // last-candle checks and looks like the token had no activity
+                // when what actually happened is nobody traded yet this minute.
+                // Skipping lets `should_enter` evaluate against the last real
+                // completed candle from Scylla, which is the honest reading.
                 if let Some(mut last_candle) =
                     Candlestick::from_tickers(&token.instid, &tickers, self.clock.now_utc())
                 {
@@ -276,8 +340,6 @@ impl App {
                     }
                     token.add_or_update_candle(last_candle);
                 }
-                // If tickers were empty, skip appending. Strategy evaluates against
-                // the last completed candles pulled from Scylla in the block above.
 
                 while token.candlesticks.len() > timeframe as usize {
                     token.candlesticks.remove(0);
@@ -329,12 +391,7 @@ impl App {
                         entry_sizes.insert(token.instid.clone(), size_quote);
                     },
                     EnterDecision::Skip(reason) => {
-                        log::debug!(
-                            "[{}] entry skipped by {}: {}",
-                            token.instid,
-                            strategy.name(),
-                            reason
-                        );
+                        log::debug!("[{}] entry skipped by {}: {}", token.instid, strategy.name(), reason);
                     },
                 }
                 token.cooldown = self.cooldown;
@@ -357,7 +414,17 @@ impl App {
                 let size_quote = entry_sizes
                     .remove(&t.instid)
                     .unwrap_or(account.balance.spendable);
-                t.balance.start = size_quote / t.price;
+
+                // Round size to the instrument's lot_sz so the exchange
+                // will accept it. Cache miss → UNKNOWN (step 0.0), which
+                // `floor_to_step` passes through unchanged — pre-rounding
+                // behavior for instruments we don't have metadata for.
+                let meta = self
+                    .instruments
+                    .get(&t.instid)
+                    .copied()
+                    .unwrap_or(InstrumentMeta::UNKNOWN);
+                t.balance.start = floor_to_step(size_quote / t.price, meta.lot_sz);
                 t.configure_from_report(config, &self.db_session).await;
 
                 {
@@ -367,6 +434,7 @@ impl App {
                             account.authentication.clone(),
                             config,
                             self.clock.now_utc(),
+                            meta,
                         )
                         .await?
                         .orders
@@ -444,12 +512,18 @@ impl App {
                 && t.exit_reason.is_some()
             {
                 {
+                    let meta = self
+                        .instruments
+                        .get(&t.instid)
+                        .copied()
+                        .unwrap_or(InstrumentMeta::UNKNOWN);
                     let order = t
                         .sell(
                             self.exchange.enable_trading,
                             account.authentication.clone(),
                             config,
                             self.clock.now_utc(),
+                            meta,
                         )
                         .await?
                         .orders
@@ -490,6 +564,29 @@ impl App {
                 t.report.change = t.change;
 
                 t.report.save(&self.db_session).await?;
+
+                // Fan out to the console over WS, if a listener exists.
+                // `try_send` is deliberate — a slow/dead consumer must never
+                // stall the trade loop. Dropping a report here just means
+                // the console misses one; Scylla has the ground truth.
+                //
+                // The enclosing guard re-fires while the token stays in
+                // `Selling` status with an unfilled sell order (which can
+                // last many cycles in the IOC-retry simulator path), so we
+                // dedup by round_id — one emit per closed position, even
+                // though the DB write is idempotent by primary key.
+                if let Some(tx) = &self.report_tx {
+                    if self.emitted_reports.insert(t.report.round_id) {
+                        let event = crate::ws::channel::ReportEvent {
+                            report: t.report.clone(),
+                            instid: t.instid.clone(),
+                            buy_price: t.buy_price,
+                            sell_price: t.price,
+                            ts: self.clock.now_utc(),
+                        };
+                        let _ = tx.try_send(crate::ws::channel::Data::Report(event));
+                    }
+                }
             }
         }
         Ok(account)

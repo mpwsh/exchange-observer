@@ -7,8 +7,7 @@
 async fn main() -> eframe::Result<()> {
     env_logger::init();
 
-    let mut app = console::Console::default();
-    app.url = "ws://127.0.0.1:9002".to_owned();
+    let app = console::Console::default();
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

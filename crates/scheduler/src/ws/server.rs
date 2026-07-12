@@ -7,9 +7,8 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_tungstenite::{
-    accept_async,
+    WebSocketStream, accept_async,
     tungstenite::{Error, Message, Result},
-    WebSocketStream,
 };
 
 type Tx = futures_util::stream::SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -74,15 +73,24 @@ impl WebSocket {
     }
 
     pub async fn send(&self, msg: String) {
-        for peer in self.peers.lock().await.iter_mut() {
-            if let Err(e) = peer.send(Message::text(msg.clone())).await {
-                match e {
-                    Error::ConnectionClosed | Error::Protocol(_) | Error::Utf8 => (),
-                    Error::Io(ref err)
-                        if err.kind() == std::io::ErrorKind::ConnectionReset
-                            || err.kind() == std::io::ErrorKind::BrokenPipe => {},
-                    _ => error!("Error sending message: {}", e),
-                }
+        let mut peers = self.peers.lock().await;
+        let mut i = 0;
+        while i < peers.len() {
+            match peers[i].send(Message::text(msg.clone())).await {
+                Ok(()) => i += 1,
+                Err(e) => {
+                    match e {
+                        Error::ConnectionClosed
+                        | Error::AlreadyClosed
+                        | Error::Protocol(_)
+                        | Error::Utf8 => {},
+                        Error::Io(ref err)
+                            if err.kind() == std::io::ErrorKind::ConnectionReset
+                                || err.kind() == std::io::ErrorKind::BrokenPipe => {},
+                        _ => error!("Error sending message: {}", e),
+                    }
+                    let _ = peers.swap_remove(i);
+                },
             }
         }
     }

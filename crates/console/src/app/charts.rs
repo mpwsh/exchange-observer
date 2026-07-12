@@ -27,15 +27,19 @@ impl CandlestickBoxPlot {
         // Build a merged, sorted list without allocating a full Vec<Candlestick>
         // clone — we just carry a small BuyMarker variant alongside the borrowed
         // candle references.
+        //
+        // Candles carry `DateTime<Utc>` (matches the scheduler's wire shape);
+        // `buy_ts` is a millis-since-epoch `Duration`. Normalise both to unix
+        // seconds up front so the sort key and axis units agree.
         enum Item<'a> {
             Buy,
             Candle(&'a Candlestick),
         }
 
-        let mut items: Vec<(Duration, Item<'_>)> = candlesticks
+        let mut items: Vec<(i64, Item<'_>)> = candlesticks
             .iter()
-            .map(|c| (c.ts, Item::Candle(c)))
-            .chain(std::iter::once((buy_ts, Item::Buy)))
+            .map(|c| (c.ts.timestamp(), Item::Candle(c)))
+            .chain(std::iter::once((buy_ts.num_seconds(), Item::Buy)))
             .collect();
         items.sort_by_key(|(ts, _)| *ts);
 
@@ -55,7 +59,7 @@ const BOX_WIDTH: f64 = 30.0;
 const WHISKER_WIDTH: f64 = 0.1;
 
 fn build_candle_box(c: &Candlestick) -> BoxElem {
-    let ts_secs = c.ts.num_seconds() as f64;
+    let ts_secs = c.ts.timestamp() as f64;
     let (lower, upper) = if c.open < c.close {
         (c.open, c.close)
     } else {
@@ -70,7 +74,7 @@ fn build_candle_box(c: &Candlestick) -> BoxElem {
 
     let legend = format!(
         "Time: {}\nVol: {}\nChange: {}\nOpen: {}\nClose: {}",
-        c.ts.num_seconds(),
+        c.ts.format("%H:%M:%S UTC"),
         c.vol,
         c.change,
         c.open,
@@ -85,10 +89,10 @@ fn build_candle_box(c: &Candlestick) -> BoxElem {
         .stroke(Stroke::new(1.0, colour))
 }
 
-fn build_buy_marker(ts: Duration, price: f64) -> BoxElem {
-    let ts_secs = ts.num_seconds() as f64;
-    let legend = format!("Time: {}\nBuy price: {price}", ts.num_seconds());
-    BoxElem::new(ts_secs, BoxSpread::new(price, price, price, price, price))
+fn build_buy_marker(ts_secs: i64, price: f64) -> BoxElem {
+    let ts_f = ts_secs as f64;
+    let legend = format!("Time: {ts_secs}\nBuy price: {price}");
+    BoxElem::new(ts_f, BoxSpread::new(price, price, price, price, price))
         .name(legend)
         .fill(Color32::YELLOW)
         .box_width(BOX_WIDTH)

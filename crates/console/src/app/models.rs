@@ -4,7 +4,7 @@
 //! field is a JSON-encoded payload of one of these types, keyed by the
 //! sibling `channel` field.
 
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
@@ -63,12 +63,14 @@ pub struct Config {
     pub timeout: Duration,
 }
 
-#[serde_with::serde_as]
 #[derive(Deserialize, Debug, Clone)]
 pub struct Candlestick {
     pub instid: String,
-    #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
-    pub ts: Duration,
+    /// Candle timestamp. The scheduler serializes this as an ISO 8601
+    /// string (chrono's default), not as milliseconds — parsing it as a
+    /// `Duration` was silently killing every `portfolio` message, which
+    /// is why open positions were "waiting" forever.
+    pub ts: DateTime<Utc>,
     pub change: f32,
     pub close: f64,
     pub high: f64,
@@ -76,4 +78,22 @@ pub struct Candlestick {
     pub open: f64,
     pub range: f32,
     pub vol: f64,
+}
+
+/// One closed position — the wire shape of a report event from the
+/// scheduler's `report` channel. Fields mirror the `okx.reports` columns
+/// the scheduler flattens onto the wire.
+#[derive(Deserialize, Debug, Clone)]
+pub struct Report {
+    pub round_id: u64,
+    pub instid: String,
+    pub reason: String,
+    pub earnings: f64,
+    pub change: f32,
+    pub time_left: i64,
+    pub highest: f32,
+    pub lowest: f32,
+    pub buy_price: f64,
+    pub sell_price: f64,
+    pub strategy: String,
 }

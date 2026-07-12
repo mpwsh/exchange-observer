@@ -53,6 +53,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tokio::spawn(async {
                 channel::transmit(server, receiver).await.unwrap();
             });
+
+            // Let the trade loop fire report events directly onto the same
+            // channel — reports don't go through the per-cycle batch and
+            // the console sees them as they close.
+            app.report_tx = Some(sender.clone());
         }
     }
 
@@ -130,14 +135,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .collect();
 
-            let ws_data = ws::channel::Data {
+            let ws_data = ws::channel::Data::State(ws::channel::StateSnapshot {
                 tokens: trading_tokens,
                 balance: account.balance.clone(),
                 fee_spend: account.fee_spend,
                 earnings: account.earnings,
                 change: account.change,
                 ts: app.time.utc,
-            };
+            });
 
             if (sender.send(ws_data).await).is_err() {
                 app.logs

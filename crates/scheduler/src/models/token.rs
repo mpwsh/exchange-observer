@@ -217,8 +217,12 @@ impl Token {
         auth: Authentication,
         config: &StrategyConfig,
         now: DateTime<Utc>,
+        meta: InstrumentMeta,
     ) -> Result<&Self> {
-        self.buy_price = self.price;
+        // Round the entry price to the exchange's tick_sz so the order
+        // book match logic can find our bid. Behavior when meta is UNKNOWN
+        // (tick_sz = 0.0): pass through, same as before this change.
+        self.buy_price = floor_to_step(self.price, meta.tick_sz);
         let mut order = trade::Order::new(
             &self.instid,
             self.buy_price.to_string(),
@@ -257,8 +261,9 @@ impl Token {
         auth: Authentication,
         config: &StrategyConfig,
         now: DateTime<Utc>,
+        meta: InstrumentMeta,
     ) -> Result<&Self> {
-        let sell_balance = if trade_enabled {
+        let raw_sell_balance = if trade_enabled {
             Account::get_balance(&self.instid.replace("-USDT", ""), &auth)
                 .await
                 .unwrap_or(self.balance.available)
@@ -272,6 +277,12 @@ impl Token {
                 _ => self.balance.available,
             }*/
         };
+        // Round sell size down to the instrument's lot_sz. Selling too
+        // much would leave a dust position we can't close cleanly; floor
+        // ensures we never send more than we hold. Cache miss preserves
+        // pre-rounding behavior (lot_sz = 0.0 → pass-through).
+        let sell_balance = floor_to_step(raw_sell_balance, meta.lot_sz);
+        let sell_price = floor_to_step(self.price, meta.tick_sz);
 
         //Count sell atempts and sell to market_price if above x
         let sell_count = self
@@ -290,7 +301,7 @@ impl Token {
 
         let mut order = trade::Order::new(
             &self.instid,
-            self.price.to_string(),
+            sell_price.to_string(),
             sell_balance.to_string(),
             Side::Sell,
             ord_type,
@@ -389,15 +400,6 @@ impl Token {
     /// `Strategy::should_enter`. The threshold checks that used to live here
     /// (`is_valid`) are now `engine::threshold::Thresholds::entry_decision`.
     pub fn entry_view(&self, denied: bool) -> TokenView {
-        if let Some(last) = self.candlesticks.last() {
-            log::debug!(
-                "[{}] engine last-candle: ts={} vol={:.2} change={:.4}",
-                self.instid,
-                last.ts,
-                last.vol,
-                last.change
-            );
-        }
         TokenView {
             instid: self.instid.clone(),
             price: self.price,
@@ -462,19 +464,19 @@ impl Token {
                     && o.prev_state != OrderState::Created
                     && o.state != OrderState::Filled
             }) {
-                log::debug!(
+                log::info!(
                     "[{}] Checking order state. result: {}",
                     self.instid,
                     order.state.to_string()
                 );
                 if enable_trading {
-                    log::debug!("[{}] Retrieving order state form exchange", self.instid);
+                    log::info!("[{}] Retrieving order state form exchange", self.instid);
                     let got_state = order.get_state(auth).await?;
                     if order.state != got_state {
                         order.state = got_state.clone();
                     }
                 } else {
-                    use rand::{Rng, thread_rng};
+                    use rand::{thread_rng, Rng};
                     let mut rng = thread_rng();
                     let random_state = if rng.gen_bool(1.0 / 6.0) {
                         OrderState::Filled
