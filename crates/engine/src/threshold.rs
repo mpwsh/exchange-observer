@@ -235,6 +235,7 @@ mod tests {
             cashout: 2.0,
             sell_floor: Some(0.3),
             min_vol: Some(1000.0),
+            min_rising_candles: None,
         }
     }
 

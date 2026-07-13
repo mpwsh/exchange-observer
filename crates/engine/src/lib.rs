@@ -19,11 +19,14 @@
 #![deny(missing_docs)]
 
 pub mod clock;
+pub mod common_checks;
+pub mod reversion;
 pub mod strategy;
 pub mod threshold;
 pub mod views;
 
 pub use clock::{Clock, LiveClock, TestClock};
+pub use reversion::{ReversionStrategy, ReversionThresholds};
 pub use strategy::{Context, EnterDecision, ExitDecision, ExitReason, Strategy};
 pub use threshold::{Thresholds, ThresholdStrategy};
 pub use views::{Candle, PortfolioView, PositionView, TokenView};

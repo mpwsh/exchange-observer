@@ -124,4 +124,11 @@ CREATE TABLE IF NOT EXISTS strategies (
     stoploss double,
     avoid_after_stoploss boolean,
     sell_floor double,
+    min_rising_candles int,
+    strategy_type text,
+    dip_window int,
+    bounce_window int,
+    min_dip float,
+    min_bounce float,
+    avoid_falling_knives boolean,
 primary key (hash));

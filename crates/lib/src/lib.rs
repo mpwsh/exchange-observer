@@ -110,6 +110,20 @@ pub struct Strategy {
     pub avoid_after_stoploss: bool,
     pub sell_floor: Option<f32>,
     pub min_rising_candles: Option<u32>,
+
+    // Strategy selection — `None` or "threshold" keeps the momentum path;
+    // "reversion" opts into ReversionStrategy. Kept as a string so future
+    // strategies can be added without touching this enum.
+    pub strategy_type: Option<String>,
+
+    // ReversionStrategy tunables. All `Option` so existing config files
+    // still deserialize; the strategy applies its own defaults on `None`.
+    // Ignored entirely by ThresholdStrategy.
+    pub dip_window: Option<u32>,
+    pub bounce_window: Option<u32>,
+    pub min_dip: Option<f32>,
+    pub min_bounce: Option<f32>,
+    pub avoid_falling_knives: Option<bool>,
 }
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Ui {
@@ -274,6 +288,14 @@ impl Strategy {
             avoid_after_stoploss: false,
             sell_floor: None,
             order_type: "ioc".to_string(),
+            // Reversion fields default to `None`; ReversionStrategy applies
+            // its own sensible defaults per-field on read.
+            strategy_type: None,
+            dip_window: None,
+            bounce_window: None,
+            min_dip: None,
+            min_bounce: None,
+            avoid_falling_knives: None,
         }
     }
     pub fn sane_defaults(&mut self) -> &mut Self {
