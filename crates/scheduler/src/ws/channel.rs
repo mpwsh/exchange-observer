@@ -133,6 +133,7 @@ async fn emit_report(server: &WebSocket, event: ReportEvent) {
                     "instid":     event.instid,
                     "reason":     event.report.reason,
                     "earnings":   event.report.earnings,
+                    "fees":       event.report.fees,
                     "change":     event.report.change,
                     "time_left":  event.report.time_left,
                     "highest":    event.report.highest,

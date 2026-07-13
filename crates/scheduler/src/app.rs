@@ -399,9 +399,10 @@ impl App {
         }
         //trigger order creation
         for t in account.portfolio.iter_mut() {
+            // Read-only check — iterate borrowed slice, no clone needed.
             let buy_orders = t
                 .orders
-                .clone()
+                .as_deref()
                 .unwrap_or_default()
                 .iter()
                 .any(|o| o.side == Side::Buy && o.state != OrderState::Cancelled);
@@ -465,8 +466,12 @@ impl App {
             price = order.px,
             size = order.sz,
             response = if self.exchange.enable_trading {
-                match order.clone().response {
-                    Some(r) => r.data[0].clone().s_msg,
+                match &order.response {
+                    Some(r) => r
+                        .data
+                        .first()
+                        .map(|d| d.s_msg.clone())
+                        .unwrap_or_else(|| "N/A".to_string()),
                     None => format!("{:?}", order.response),
                 }
             } else {
@@ -486,7 +491,7 @@ impl App {
         for t in account.portfolio.iter_mut() {
             let filled_orders_amount: f64 = t
                 .orders
-                .clone()
+                .as_deref()
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|o| {
@@ -500,7 +505,7 @@ impl App {
 
             let live_orders = t
                 .orders
-                .clone()
+                .as_deref()
                 .unwrap_or_default()
                 .iter()
                 .any(|o| o.side == Side::Sell && o.state == OrderState::Live);
@@ -550,18 +555,37 @@ impl App {
                     self.deny_list.push(t.instid.replace("-USDT", ""))
                 };
 
-                // Create token report
-                let usdt_balance = t.balance.current * t.price;
-                let usdt_fee = calculate_fees(usdt_balance, self.exchange.taker_fee);
-                let usdt_balance_after_fees = usdt_balance - usdt_fee;
-                let earnings = (t.balance.start * t.buy_price) - usdt_balance_after_fees;
-                let earnings = if earnings < 0.0 {
-                    usdt_balance_after_fees - (t.balance.start * t.buy_price)
-                } else {
-                    -earnings
-                };
+                // Create token report — compute realized P&L honestly.
+                //
+                // Every round-trip pays the taker fee twice: once on entry
+                // (the buy debited `cost + entry_fee` from our balance) and
+                // once on exit (the sell credits `proceeds - exit_fee`).
+                // Both must be subtracted for `earnings` to match reality.
+                // Previously only the exit fee was netted, which understated
+                // every trade's loss (or overstated its win) by one fee —
+                // roughly $0.05 per trade at $50 spendable + 0.10% taker.
+                let cost = t.balance.start * t.buy_price;
+                let entry_fee = calculate_fees(cost, self.exchange.taker_fee);
+                let proceeds = t.balance.current * t.price;
+                let exit_fee = calculate_fees(proceeds, self.exchange.taker_fee);
+                let net_proceeds = proceeds - exit_fee;
+                let total_cost = cost + entry_fee;
+                // Signed P&L: positive = profit, negative = loss.
+                let earnings = net_proceeds - total_cost;
+                let fees = entry_fee + exit_fee;
+
                 t.report.earnings = earnings;
-                t.report.change = t.change;
+                t.report.fees = fees;
+                // Realized change over the round-trip, not `t.change` (which
+                // is the strategy's live view and can move between the exit
+                // decision and the sell fill). This makes `change` and
+                // `earnings` self-consistent — they're now the same trade.
+                t.report.change = if t.buy_price > 0.0 {
+                    (((t.price - t.buy_price) / t.buy_price) * 100.0) as f32
+                } else {
+                    0.0
+                };
+                t.report.sell_price = t.price;
 
                 t.report.save(&self.db_session).await?;
 

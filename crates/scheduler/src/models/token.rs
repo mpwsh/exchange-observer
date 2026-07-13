@@ -287,7 +287,7 @@ impl Token {
         //Count sell atempts and sell to market_price if above x
         let sell_count = self
             .orders
-            .clone()
+            .as_deref()
             .unwrap_or_default()
             .iter()
             .filter(|o| o.side == Side::Sell)
@@ -412,9 +412,7 @@ impl Token {
     }
 
     pub fn sum_candles(&mut self) -> &mut Self {
-        //check if vol is enough in the selected timeframe
-        self.vol = self.candlesticks.iter().map(|x| x.vol).sum();
-        // Sum vol, changes, and range from candlesticks (all f64 from DB).
+        // Fold vol, changes, and range across the timeframe window in one pass.
         let (vol, change, range) = self.candlesticks.iter().fold(
             (0.0_f64, 0.0_f64, 0.0_f64),
             |(vol_acc, change_acc, range_acc), x| {

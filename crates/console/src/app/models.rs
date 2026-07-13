@@ -89,6 +89,11 @@ pub struct Report {
     pub instid: String,
     pub reason: String,
     pub earnings: f64,
+    /// Round-trip taker fees paid (entry + exit). `default` for
+    /// backward compatibility with older scheduler versions that didn't
+    /// send this field.
+    #[serde(default)]
+    pub fees: f64,
     pub change: f32,
     pub time_left: i64,
     pub highest: f32,

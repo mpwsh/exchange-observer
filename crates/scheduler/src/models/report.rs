@@ -7,6 +7,11 @@ pub struct Report {
     pub buy_price: f64,
     pub sell_price: f64,
     pub earnings: f64,
+    /// Total round-trip fees paid to the exchange (entry + exit taker fee).
+    /// Kept as a separate column so tuning analysis can see the fee overhead
+    /// per reason instead of it being silently netted into earnings.
+    #[serde(default)]
+    pub fees: f64,
     pub reason: String,
     pub highest: f32,
     pub highest_elapsed: i64,
@@ -26,6 +31,7 @@ impl Default for Report {
             buy_price: 0.0,
             sell_price: 0.0,
             earnings: 0.00,
+            fees: 0.0,
             reason: String::new(),
             lowest: 0.0,
             lowest_elapsed: 0,

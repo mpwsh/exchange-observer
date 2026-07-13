@@ -356,6 +356,7 @@ impl Console {
                     h(ui, 100.0, "SYMBOL");
                     h(ui, 120.0, "REASON");
                     h(ui, 90.0, "EARNINGS");
+                    h(ui, 60.0, "FEES");
                     h(ui, 70.0, "CHANGE");
                     h(ui, 70.0, "HIGHEST");
                     h(ui, 70.0, "LOWEST");
@@ -414,6 +415,11 @@ impl Console {
                                         format!("${:>+7.3}", r.earnings),
                                         change_color(r.earnings),
                                     ),
+                                );
+                                cell(
+                                    ui,
+                                    60.0,
+                                    mono(format!("${:>5.3}", r.fees), DIM),
                                 );
                                 cell(
                                     ui,

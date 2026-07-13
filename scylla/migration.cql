@@ -18,13 +18,13 @@ AND CLUSTERING ORDER BY (ts desc)
 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
 
 DROP TABLE IF EXISTS reports;
-
 CREATE TABLE IF NOT EXISTS reports (
   round_id bigint,
   instid text,
   buy_price double,
   sell_price double,
   earnings double,
+  fees double,
   reason text,
   highest double,
   highest_elapsed bigint,
@@ -36,4 +36,3 @@ CREATE TABLE IF NOT EXISTS reports (
   ts timestamp,
   primary key ((round_id, instid), ts))
 WITH CLUSTERING ORDER BY (ts desc);
-

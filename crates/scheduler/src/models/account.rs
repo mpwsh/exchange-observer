@@ -83,7 +83,14 @@ impl Account {
                     match order.state {
                         OrderState::Live => match order.side {
                             Side::Buy => {
-                                self.balance.available -= self.balance.spendable;
+                                // Real out-flow is spendable + entry fee; the
+                                // fee was previously omitted, so the UI's
+                                // "available" was cumulatively optimistic by
+                                // one fee per trade. Same fee gets added back
+                                // in the Cancelled branch to keep it symmetric.
+                                let entry_fee =
+                                    calculate_fees(self.balance.spendable, app.exchange.taker_fee);
+                                self.balance.available -= self.balance.spendable + entry_fee;
                                 open_order_value += self.balance.spendable;
                             },
                             Side::Sell => {
@@ -93,7 +100,9 @@ impl Account {
                         },
                         OrderState::Cancelled => match order.side {
                             Side::Buy => {
-                                self.balance.available += self.balance.spendable;
+                                let entry_fee =
+                                    calculate_fees(self.balance.spendable, app.exchange.taker_fee);
+                                self.balance.available += self.balance.spendable + entry_fee;
                             },
                             Side::Sell => {
                                 t.balance.available += size;
@@ -182,7 +191,7 @@ impl Account {
     pub fn clean_portfolio(&mut self) -> &Self {
         self.portfolio.retain(|t| {
             let waiting = t.status == token::Status::Waiting;
-            let live_orders = if let Some(orders) = t.orders.clone() {
+            let live_orders = if let Some(orders) = t.orders.as_deref() {
                 orders.iter().any(|o| o.state == OrderState::Live)
             } else {
                 true
