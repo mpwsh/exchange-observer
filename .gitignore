@@ -4,3 +4,5 @@ config.toml
 .Cargo.lock
 /scylla/data
 analysis-*
+./analysis/.venv
+analysis/sections/__pycache__/
