@@ -152,8 +152,31 @@ pub struct Strategy {
     // entirely by ThresholdStrategy.
     pub dip_window: Option<u32>,
     pub bounce_window: Option<u32>,
+    /// Absolute floor on the dip, in percent. A **cost** test: a dislocation
+    /// smaller than the round trip (2 x taker + spread, ~0.22%) cannot pay for
+    /// itself even if it reverts perfectly.
     pub min_dip: Option<f32>,
+    /// Dip requirement in multiples of the token's own volatility. A
+    /// **dislocation** test. `None` disables it, leaving `min_dip` alone.
+    ///
+    /// The threshold applied is `max(min_dip, min_dip_std * sigma * sqrt(dip_window))`,
+    /// so both must be satisfied. The floor asks "is there enough here to pay for
+    /// the trade?" and the sigma term asks "is this unusual for *this* token?".
+    /// Neither alone is sufficient.
+    ///
+    /// Why: a fixed percentage means wildly different things across the universe.
+    /// At `min_dip = 0.5` with SOL's ~0.05% 1-minute sigma, a 3-candle dip scales as
+    /// `0.05 * sqrt(3) = 0.087%` — so 0.5% is a **5.7 sigma** demand and SOL can never
+    /// pass. PI's sigma is ~0.5%, so the same 0.5% is **0.58 sigma** and fires on the
+    /// token merely breathing. One number, ten-fold difference in meaning, and it
+    /// silently reduced a 250-token universe to whichever handful was noisiest —
+    /// which is also the handful whose order book cannot absorb `spendable`.
+    pub min_dip_std: Option<f32>,
+    /// Absolute floor on the bounce, in percent.
     pub min_bounce: Option<f32>,
+    /// Bounce requirement in multiples of the token's own volatility. See
+    /// [`Self::min_dip_std`].
+    pub min_bounce_std: Option<f32>,
     pub avoid_falling_knives: Option<bool>,
 }
 
@@ -301,7 +324,9 @@ impl Default for Strategy {
             dip_window: None,
             bounce_window: None,
             min_dip: None,
+            min_dip_std: None,
             min_bounce: None,
+            min_bounce_std: None,
             avoid_falling_knives: None,
         }
     }

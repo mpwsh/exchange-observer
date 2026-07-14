@@ -58,11 +58,10 @@
 use chrono::{DateTime, Utc};
 
 use crate::{
-    common_checks,
+    StrategyConfig, common_checks,
     strategy::{Context, EnterDecision, EntrySignal, ExitDecision, Strategy},
     threshold::Thresholds,
     views::{PositionView, TokenView},
-    StrategyConfig,
 };
 
 /// Buy dips that have just started to recover.
@@ -112,21 +111,44 @@ impl Strategy for ReversionStrategy {
         }
     }
 
-    /// Rank by how *deep* the recent dip is: score = `-dip_sum`, so the deepest
-    /// dips get the highest score. The bounce check still gates entry, so a
-    /// deeply-dipped token without a bounce won't trade — it just wins the
-    /// ranking race against tokens that aren't dipping at all.
+    /// Rank by how **unusual** the dip is for that token, not how large it is in
+    /// percent: `score = -dip_sum / (sigma * sqrt(dip_window))`. Highest sigma wins.
     ///
-    /// Falls back to `token.change` when the window arithmetic doesn't fit.
+    /// The old score was raw `-dip_sum`, and it was the last piece of the machine
+    /// that funnelled a 250-token universe into PI-USDT. A volatile token has a
+    /// deeper dip **by construction** — not because anything dislocated, but because
+    /// that is what volatile means. So the eight names `clean_top` kept were, every
+    /// cycle, simply the eight noisiest instruments available: exactly the ones with
+    /// the widest spreads and the thinnest books, and the ones whose entire best bid
+    /// your `spendable` exceeds.
+    ///
+    /// Normalising by the token's own volatility inverts that. A 4-sigma dip on SOL
+    /// now outranks a 0.5-sigma wobble on PI, which is the ordering you want: rank by
+    /// *dislocation*, and let the deep, cheap-to-trade instruments compete on merit.
+    ///
+    /// The bounce check still gates entry, so a deeply-dipped token that never
+    /// recovers won't trade — it just wins the ranking race against tokens that
+    /// aren't dipping at all.
+    ///
+    /// Falls back to raw `-dip_sum` when sigma is missing (a token with no volatility
+    /// history cannot be normalised), and to `token.change` when the window
+    /// arithmetic doesn't fit.
     fn rank_score(&self, ctx: &Context<'_>, token: &TokenView) -> f64 {
         let cfg = ReversionThresholds::from(ctx.config);
         let end = completed_len(token, Some(ctx.clock.now_utc()));
-        match cfg.window_bounds(end) {
-            Some((dip_start, bounce_start)) => -token.candles[dip_start..bounce_start]
-                .iter()
-                .map(|c| c.change)
-                .sum::<f64>(),
-            None => token.change,
+        let Some((dip_start, bounce_start)) = cfg.window_bounds(end) else {
+            return token.change;
+        };
+        let dip_sum: f64 = token.candles[dip_start..bounce_start]
+            .iter()
+            .map(|c| c.change)
+            .sum();
+
+        let scale = window_scale(token.std_deviation, cfg.dip_window);
+        if scale > 0.0 {
+            -dip_sum / scale
+        } else {
+            -dip_sum
         }
     }
 }
@@ -162,15 +184,20 @@ pub struct ReversionThresholds {
     pub bounce_window: usize,
     /// How many candles *before* the bounce form the "dip". Must be >= 1.
     pub dip_window: usize,
-    /// Minimum required *magnitude* of the dip sum (percent, positive).
-    /// The dip candles' change sum must be <= `-min_dip`.
+    /// Absolute floor on the dip magnitude (percent, positive). A **cost** test.
     ///
-    /// Note this has to clear the round-trip cost of the trade to mean anything:
-    /// a dip smaller than (2 x taker fee + spread) is not a dislocation, it's
-    /// the cost of trading.
+    /// A dip smaller than the round trip (2 x taker + spread, ~0.22%) is not a
+    /// dislocation — it is the cost of trading. No amount of volatility scaling
+    /// makes such a trade payable, which is why this floor survives alongside
+    /// `min_dip_std`.
     pub min_dip: f64,
-    /// Minimum required bounce sum (percent) over `bounce_window`.
+    /// Dip requirement in multiples of the token's own volatility. A
+    /// **dislocation** test. `None` leaves `min_dip` as the only gate.
+    pub min_dip_std: Option<f64>,
+    /// Absolute floor on the bounce sum (percent).
     pub min_bounce: f64,
+    /// Bounce requirement in multiples of the token's own volatility.
+    pub min_bounce_std: Option<f64>,
     /// If true, skip tokens whose bounce-window low undercuts the dip window's
     /// low — those are still falling, not reverting.
     ///
@@ -187,9 +214,49 @@ impl From<&StrategyConfig> for ReversionThresholds {
             bounce_window: config.bounce_window.unwrap_or(2) as usize,
             dip_window: config.dip_window.unwrap_or(10) as usize,
             min_dip: f64::from(config.min_dip.unwrap_or(0.3)),
+            min_dip_std: config.min_dip_std.map(f64::from),
             min_bounce: f64::from(config.min_bounce.unwrap_or(0.05)),
+            min_bounce_std: config.min_bounce_std.map(f64::from),
             avoid_falling_knives: config.avoid_falling_knives.unwrap_or(true),
         }
+    }
+}
+
+/// The move a random walk of per-candle volatility `sigma` covers over `n` bars:
+/// `sigma * sqrt(n)`.
+///
+/// This is what makes a threshold portable across the universe. `min_dip = 0.5%`
+/// over 3 candles is a **5.7 sigma** demand on SOL (sigma ~0.05%, so the 3-bar scale
+/// is 0.087%) and a **0.58 sigma** demand on PI (sigma ~0.5%, scale 0.87%). The same
+/// number, a ten-fold difference in what it asks for — which is how a 250-token
+/// universe silently collapsed to whichever handful was noisiest. Expressed in
+/// sigma, "a 2-sigma dislocation" means the same thing on both.
+///
+/// Returns `0.0` when sigma is absent or non-finite, which leaves the absolute floor
+/// as the only gate — see `required()`.
+fn window_scale(sigma: f64, window: usize) -> f64 {
+    if !sigma.is_finite() || sigma <= 0.0 || window == 0 {
+        return 0.0;
+    }
+    sigma * (window as f64).sqrt()
+}
+
+/// The threshold actually applied: the **larger** of the absolute floor and the
+/// sigma multiple.
+///
+/// Both must be satisfied, and they ask different questions. The floor asks *is
+/// there enough here to pay for the trade?* — a 0.17% dislocation cannot cover a
+/// 0.22% round trip however unusual it is for that token. The sigma term asks *is
+/// this unusual for this token at all?* — a 0.5% wobble on PI is half a standard
+/// deviation, i.e. the token breathing, not a dislocation. Neither alone is
+/// sufficient and the failure modes are opposite.
+///
+/// `f64::max` returns the non-NaN operand, so a NaN sigma degrades to the floor
+/// rather than poisoning the comparison.
+fn required(floor: f64, multiple: Option<f64>, sigma: f64, window: usize) -> f64 {
+    match multiple {
+        Some(k) => floor.max(k * window_scale(sigma, window)),
+        None => floor,
     }
 }
 
@@ -266,25 +333,36 @@ impl ReversionThresholds {
         let dip_slice = &token.candles[dip_start..bounce_start];
         let bounce_slice = &token.candles[bounce_start..end];
 
-        // Dip check: cumulative change over the dip window must be negative by
-        // at least `min_dip`.
+        // Dip check. The bar is the larger of the absolute floor and the sigma
+        // multiple — see `required()`.
+        let dip_required = required(
+            self.min_dip,
+            self.min_dip_std,
+            token.std_deviation,
+            self.dip_window,
+        );
         let dip_sum: f64 = dip_slice.iter().map(|c| c.change).sum();
         #[expect(
             clippy::neg_cmp_op_on_partial_ord,
             reason = "NaN inputs must fail the check, matching the threshold-strategy convention"
         )]
-        if !(dip_sum <= -self.min_dip) {
+        if !(dip_sum <= -dip_required) {
             return EnterDecision::Skip("dip_too_shallow");
         }
 
-        // Bounce check: cumulative change over the bounce window must be
-        // positive by at least `min_bounce`.
+        // Bounce check, same construction.
+        let bounce_required = required(
+            self.min_bounce,
+            self.min_bounce_std,
+            token.std_deviation,
+            self.bounce_window,
+        );
         let bounce_sum: f64 = bounce_slice.iter().map(|c| c.change).sum();
         #[expect(
             clippy::neg_cmp_op_on_partial_ord,
             reason = "NaN inputs must fail the check, matching the threshold-strategy convention"
         )]
-        if !(bounce_sum >= self.min_bounce) {
+        if !(bounce_sum >= bounce_required) {
             return EnterDecision::Skip("bounce_too_weak");
         }
 
@@ -370,7 +448,9 @@ mod tests {
             bounce_window: 2,
             dip_window: 5,
             min_dip: 0.5,
+            min_dip_std: None,
             min_bounce: 0.1,
+            min_bounce_std: None,
             avoid_falling_knives: true,
         }
     }
@@ -656,11 +736,116 @@ mod tests {
         assert!(!matches!(decision, EnterDecision::Skip("live_bar_new_low")));
     }
 
+    // -- volatility scaling --------------------------------------------------
+
     #[test]
-    fn rank_score_prefers_deeper_dips() {
+    fn required_takes_the_larger_of_the_floor_and_the_sigma_multiple() {
+        // SOL: sigma 0.05%, 3-candle scale 0.087%, 2 sigma = 0.173% -> the FLOOR binds.
+        // A 0.173% dislocation cannot cover a 0.22% round trip however rare it is.
+        assert!((required(0.35, Some(2.0), 0.05, 3) - 0.35).abs() < 1e-9);
+
+        // PI: sigma 0.5%, 3-candle scale 0.866%, 2 sigma = 1.73% -> the SIGMA binds.
+        // A 0.35% wobble on PI is the token breathing, not a dislocation.
+        assert!((required(0.35, Some(2.0), 0.5, 3) - 1.732_050_8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn required_degrades_to_the_floor_without_a_sigma_multiple() {
+        assert!((required(0.5, None, 0.5, 3) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn required_degrades_to_the_floor_on_a_nan_or_zero_sigma() {
+        // A token with no volatility history cannot be normalised; do not poison the
+        // comparison, just fall back to the absolute floor.
+        assert!((required(0.5, Some(2.0), f64::NAN, 3) - 0.5).abs() < 1e-9);
+        assert!((required(0.5, Some(2.0), 0.0, 3) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn entry_skips_a_dip_that_is_large_in_percent_but_small_in_sigma() {
+        // The PI case. The dip sums to -1.0%, which clears a 0.5% floor easily — but
+        // on a token whose sigma is 1.0% that is only 0.58 sigma over 3 candles. The
+        // token is breathing, not dislocating.
+        let mut token = passing_token();
+        token.std_deviation = 1.0;
+        let t = ReversionThresholds {
+            dip_window: 5,
+            min_dip: 0.5,
+            min_dip_std: Some(2.0),
+            ..thresholds()
+        };
+        assert_eq!(
+            t.entry_decision(100.0, &token),
+            EnterDecision::Skip("dip_too_shallow")
+        );
+    }
+
+    #[test]
+    fn entry_takes_the_same_dip_when_it_is_large_in_sigma() {
+        // Identical candles. The only difference is that this token is quiet, so the
+        // same -1.0% dip is a 2.2 sigma dislocation rather than noise.
+        let mut token = passing_token();
+        token.std_deviation = 0.2;
+        let t = ReversionThresholds {
+            dip_window: 5,
+            min_dip: 0.5,
+            min_dip_std: Some(2.0),
+            min_bounce_std: None,
+            ..thresholds()
+        };
+        assert_eq!(
+            t.entry_decision(100.0, &token),
+            EnterDecision::Enter { size_quote: 100.0 }
+        );
+    }
+
+    #[test]
+    fn rank_score_prefers_the_bigger_dislocation_not_the_bigger_percentage() {
         use crate::clock::TestClock;
         use crate::views::PortfolioView;
+
+        let clock = TestClock::new(ts() + Duration::minutes(5));
+        let mut config = StrategyConfig::default();
+        config.timeframe = 10;
+        config.min_vol = Some(1000.0);
+        config.dip_window = Some(5);
+        config.bounce_window = Some(2);
+        config.min_dip = Some(0.5);
+        config.min_bounce = Some(0.1);
+        let portfolio = PortfolioView {
+            available: 1000.0,
+            spendable: 100.0,
+            positions: 0,
+        };
+        let ctx = Context {
+            clock: &clock,
+            config: &config,
+            portfolio: &portfolio,
+        };
+
+        // The noisy token dips TWICE as far in percent...
+        let mut noisy = timestamped_token();
+        noisy.std_deviation = 1.0;
+        for c in noisy.candles.iter_mut().skip(3).take(5) {
+            c.change = -0.4;
+        }
+        // ...but the quiet one's shallower dip is a far bigger event for it.
+        let mut quiet = timestamped_token();
+        quiet.std_deviation = 0.1;
+        for c in quiet.candles.iter_mut().skip(3).take(5) {
+            c.change = -0.2;
+        }
+
+        let strategy = ReversionStrategy;
+        assert!(strategy.rank_score(&ctx, &quiet) > strategy.rank_score(&ctx, &noisy));
+    }
+
+    #[test]
+    fn rank_score_prefers_deeper_dips() {
         use crate::StrategyConfig;
+        use crate::clock::TestClock;
+        use crate::views::PortfolioView;
 
         // A minute after the newest candle, so nothing is treated as in-progress.
         let clock = TestClock::new(ts() + Duration::minutes(5));

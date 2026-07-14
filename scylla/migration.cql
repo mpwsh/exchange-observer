@@ -2,8 +2,18 @@
 --
 -- Safe to run on a fresh keyspace or on a live one. Same file either way.
 --
+-- TTLs, and why they differ:
+--   tickers    1h   -- only the newest row is ever read. This is the table that costs you.
+--   trades     1h   -- nothing subscribes to it; nothing writes to it.
+--   books      1h   -- likewise.
+--   candle1m   12h  -- the scheduler needs 20 min, but `trade_replay` charts every
+--                      trade from these rows and you read the reports hours later.
+--   reports    none -- your only history. NEVER put a TTL on this.
+--   orders     none
+--   strategies none -- maps a config hash to what it meant.
+--
 -- What it destroys: candle1m, tickers, trades, books, order_entry, strategies.
---   The four market-data tables are all on a 24h TTL and refill themselves.
+--   The four market-data tables all carry a TTL and refill themselves.
 --   `strategies` is a registry the scheduler rewrites on every boot (see
 --   App::save_strategy). It has to be recreated rather than altered -- more on
 --   that below.
@@ -60,9 +70,21 @@ CREATE TABLE IF NOT EXISTS candle1m (
   confirm boolean,
   ts timestamp,
   primary key (instid, ts))
-WITH default_time_to_live = 86400
+-- 12h, down from 24h.
+--
+-- The scheduler only ever reads the last `timeframe` minutes. The reason this is
+-- not an hour is `analysis/sections/trade_replay.py`: every candle chart in the
+-- report is drawn from these rows, around the timestamp of the trade. Cut this to
+-- 1h and you can only ever chart trades from the last hour -- which is the single
+-- most useful diagnostic you have, and you read those reports hours after the fact.
+--
+-- One row per instrument per minute. Next to `tickers` this table is free; it is
+-- not what is costing you.
+WITH default_time_to_live = 43200
 AND CLUSTERING ORDER BY (ts desc)
-AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
+AND compaction = {'class': 'TimeWindowCompactionStrategy',
+                  'compaction_window_unit': 'HOURS',
+                  'compaction_window_size': 1};
 
 -- tickers ---------------------------------------------------------------------
 -- `last` removed from the primary key.
@@ -100,9 +122,30 @@ CREATE TABLE IF NOT EXISTS tickers (
   sodutc8 double,
   ts timestamp,
   primary key (instid, ts))
-WITH default_time_to_live = 86400
+-- 1 hour. Nothing reads a ticker older than the newest one:
+--
+--     SELECT last, askpx, asksz, bidpx, bidsz FROM tickers WHERE instid=? LIMIT 1
+--
+-- That is the only query against this table, and `LIMIT 1` on a `ts desc` clustering
+-- order means row zero. An hour is already pure margin.
+--
+-- This is also the table that costs you. At ~250 instruments x ~10 updates/sec it is
+-- the overwhelming majority of the ~700 msg/s the consumer handles; candle1m is one
+-- row per instrument per minute.
+--
+-- The compaction window was 3 HOURS -- longer than the TTL now is, which means TWCS
+-- could never drop a whole SSTable cleanly and just kept compacting. Rule of thumb is
+-- ~20-30 windows across the TTL, so 3-minute windows over 1 hour. This is the likeliest
+-- explanation for a P99.9 insert latency of 3,800ms that climbed steadily the longer
+-- the process ran, while avg latency sat at 0-1ms. A rotten tail, not a slow database.
+--
+-- NOTE: `default_time_to_live` applies to NEW writes only. Existing rows keep whatever
+-- TTL they were written with.
+WITH default_time_to_live = 3600
 AND CLUSTERING ORDER BY (ts desc)
-AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
+AND compaction = {'class': 'TimeWindowCompactionStrategy',
+                  'compaction_window_unit': 'MINUTES',
+                  'compaction_window_size': 3};
 
 -- trades ----------------------------------------------------------------------
 -- tradeid int -> bigint. OKX trade ids pass 2^31 on active instruments, and the
@@ -122,9 +165,14 @@ CREATE TABLE IF NOT EXISTS trades (
   side text,
   ts timestamp,
   primary key (instid, ts, tradeid))
-WITH default_time_to_live = 86400
+-- 1 hour. The config subscribes to `candle1m` and `tickers` only, so nothing writes
+-- to this table at all -- but the consumer prepares a statement against it at boot and
+-- will refuse to start if it is missing.
+WITH default_time_to_live = 3600
 AND CLUSTERING ORDER BY (ts desc)
-AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
+AND compaction = {'class': 'TimeWindowCompactionStrategy',
+                  'compaction_window_unit': 'MINUTES',
+                  'compaction_window_size': 3};
 
 -- books -----------------------------------------------------------------------
 -- Look before you leap:  SELECT instid, ts, asks, bids FROM books LIMIT 20;
@@ -161,9 +209,14 @@ CREATE TABLE IF NOT EXISTS books (
   seq_id bigint,
   ts timestamp,
   primary key (instid, ts, seq_id))
-WITH default_time_to_live = 86400
+-- 1 hour. As with `trades`: the config subscribes to candle1m and tickers only, so
+-- nothing writes here -- but the consumer prepares a statement against it at boot and
+-- will refuse to start if the table is missing.
+WITH default_time_to_live = 3600
 AND CLUSTERING ORDER BY (ts desc)
-AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 3};
+AND compaction = {'class': 'TimeWindowCompactionStrategy',
+                  'compaction_window_unit': 'MINUTES',
+                  'compaction_window_size': 3};
 
 -- ===========================================================================
 -- strategies. Recreated, not altered.
@@ -211,9 +264,20 @@ CREATE TABLE IF NOT EXISTS strategies (
     dip_window int,
     bounce_window int,
     min_dip float,
+    min_dip_std float,
     min_bounce float,
+    min_bounce_std float,
     avoid_falling_knives boolean,
 primary key (hash));
+
+-- `min_dip_std` and `min_bounce_std` are new. ON AN EXISTING KEYSPACE the CREATE
+-- above is a no-op and will NOT add them:
+--
+--   ALTER TABLE strategies ADD min_dip_std float;
+--   ALTER TABLE strategies ADD min_bounce_std float;
+--
+-- `App::save_strategy` does INSERT ... JSON and Scylla rejects a JSON insert
+-- carrying a key that is not a column, so without these the scheduler dies at boot.
 
 -- ===========================================================================
 -- Never dropped. This is your history.
