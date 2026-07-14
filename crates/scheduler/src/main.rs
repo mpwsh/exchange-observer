@@ -16,6 +16,29 @@ pub const BASE_URL: &str = "https://www.okx.com";
 pub const ORDERS_ENDPOINT: &str = "/api/v5/trade/order";
 pub const BALANCE_ENDPOINT: &str = "/api/v5/account/balance";
 
+/// Builds the strategy named by the config.
+///
+/// This is the bug that made every other number in the config a lie: `main`
+/// used to say `let strategy = ThresholdStrategy;` and `strategy_type` was read
+/// by nothing, anywhere — even though `exchange_observer::Strategy` has carried
+/// the field all along. A config saying `strategy_type = "reversion"` ran
+/// momentum, and ran it with `min_change`, `min_deviation` and
+/// `min_change_last_candle` set to 0.0, because those were believed to be inert
+/// under reversion. They are the *only* entry gates `ThresholdStrategy` reads.
+///
+/// `None` keeps the historical behavior for configs written before the field
+/// existed.
+fn build_strategy(strategy_type: Option<&str>) -> Result<Box<dyn Strategy>, Box<dyn Error>> {
+    match strategy_type {
+        None | Some("threshold") => Ok(Box::new(ThresholdStrategy)),
+        Some("reversion") => Ok(Box::new(ReversionStrategy)),
+        Some(other) => Err(format!(
+            "unknown strategy_type `{other}` in config: expected `threshold` or `reversion`"
+        )
+        .into()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut cfg: AppConfig = AppConfig::load()?;
@@ -25,7 +48,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Composition root: live adapters get injected here; tests and future
     // backtests substitute TestClock / other Strategy impls.
     let clock: Arc<dyn Clock> = Arc::new(LiveClock::default());
-    let strategy = ThresholdStrategy;
+    let strategy = build_strategy(cfg.strategy.strategy_type.as_deref())?;
+    log::info!(
+        "Running strategy `{}` (hash {:.7})",
+        strategy.name(),
+        cfg.strategy.hash
+    );
 
     let mut app = App::init(&cfg, clock).await?;
 
@@ -54,9 +82,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 channel::transmit(server, receiver).await.unwrap();
             });
 
-            // Let the trade loop fire report events directly onto the same
-            // channel — reports don't go through the per-cycle batch and
-            // the console sees them as they close.
             app.report_tx = Some(sender.clone());
         }
     }
@@ -76,16 +101,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await?;
 
-        app.filter_invalid(&strategy, &cfg.strategy, &account.portfolio_view());
+        app.filter_invalid(
+            strategy.as_ref(),
+            &cfg.strategy,
+            &account.portfolio_view(),
+        );
         app.clean_top(cfg.strategy.top).get_tickers().await?;
 
-        //update timers in portfolio tokens
-        account = app.buy_tokens(account, &strategy, &cfg.strategy).await?;
+        account = app
+            .buy_tokens(account, strategy.as_ref(), &cfg.strategy)
+            .await?;
 
         //update portfolio and tracked tokens
         app.update_cooldowns(&account.portfolio);
 
-        account.portfolio = app.update_timeouts(account.portfolio, &cfg.strategy);
+        // The clock on an open position now runs unconditionally; it no longer
+        // takes `config` because it no longer resets itself on green candles.
+        account.portfolio = app.update_timeouts(account.portfolio);
         account.portfolio = app
             .update_candles(cfg.strategy.timeframe, account.portfolio)
             .await?;
@@ -98,13 +130,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .update_orders(app.exchange.enable_trading, &app.exchange.authentication)
                 .await?;
 
-            let still_listed = app.tokens.iter().any(|t| t.instid == token.instid);
             let ctx = Context {
                 clock: app.clock.as_ref(),
                 config: &cfg.strategy,
                 portfolio: &portfolio_view,
             };
-            let decision = strategy.should_exit(&ctx, &token.position_view(still_listed));
+            let decision = strategy.should_exit(&ctx, &token.position_view());
             token.apply_exit(decision);
         }
 
@@ -118,12 +149,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         account.clean_portfolio();
 
         // Websocket
-        // Send state to the WS console — but only when the server (and thus
-        // `channel::transmit`, the sole consumer of this bounded channel) is
-        // running. With no consumer, the channel fills after 100 cycles and
-        // the next `send().await` parks the scheduler loop forever.
         if ws_enabled {
-            // Only send tokens that are actively trading
             let trading_tokens: Vec<Token> = account
                 .portfolio
                 .clone()

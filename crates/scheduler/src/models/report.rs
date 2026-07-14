@@ -21,6 +21,35 @@ pub struct Report {
     pub time_left: i64,
     pub strategy: String,
     pub ts: String,
+
+    // --- Entry conditions ----------------------------------------------------
+    //
+    // The reports used to record what happened and never why we were there. So
+    // "do deeper dips produce better trades?" — the question that decides
+    // `min_dip` — could not be answered from the data at all, and the threshold
+    // got set by argument. These four columns close that.
+    //
+    // Note these are the values that *cleared* the thresholds, not the thresholds
+    // themselves. Recording `min_dip` would tell you nothing: every entry cleared
+    // it by definition.
+    /// Cumulative dip that triggered the entry, in percent (negative for a real
+    /// dip). `0.0` for strategies with no dip window.
+    #[serde(default)]
+    pub dip: f64,
+    /// Cumulative bounce that confirmed the entry, in percent.
+    #[serde(default)]
+    pub bounce: f64,
+    /// The token's candle-change standard deviation at entry — its volatility.
+    ///
+    /// Already computed every cycle and thrown away (`max_deviation = 10.0` means
+    /// nothing filters on it). This is the number that would let `stoploss` scale
+    /// with the instrument instead of being one constant applied to tokens whose
+    /// noise floors differ by 5-10x.
+    #[serde(default)]
+    pub std_deviation: f64,
+    /// Quoted spread at entry, in basis points. What it cost to get in.
+    #[serde(default)]
+    pub spread_bps: f64,
 }
 
 impl Default for Report {
@@ -40,6 +69,10 @@ impl Default for Report {
             change: 0.0,
             time_left: 0,
             strategy: String::new(),
+            dip: 0.0,
+            bounce: 0.0,
+            std_deviation: 0.0,
+            spread_bps: 0.0,
             // Placeholder: every live report is rebuilt via `Report::new`
             // before it is read or saved, so no ambient time is needed here.
             ts: String::from("0"),

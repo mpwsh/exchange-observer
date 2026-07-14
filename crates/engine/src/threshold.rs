@@ -180,9 +180,27 @@ impl Thresholds {
             return ExitDecision::Exit(ExitReason::Cashout);
         }
 
-        if position.change >= sell_floor
+        // Ratchet. Once the position has been up by `sell_floor`, we do not hand
+        // that back: falling from above the floor to below it closes the trade.
+        //
+        // This used to require `!position.still_listed` — that the token had stopped
+        // passing the *entry* filter. An exit conditioned on the entry filter, which
+        // is a coupling between two questions that have nothing to do with each
+        // other, and it failed exactly where you'd least want it to: loosen `min_dip`
+        // and a rallying position keeps re-qualifying as a fresh dip-and-bounce, so
+        // it stays listed and the floor never fires. ALLO peaked at +0.81% and exited
+        // at -0.41% with `sell_floor = 0.4` sitting right there, because the exit was
+        // waiting for the entry filter's permission.
+        //
+        // `sell_floor` now means what a trader would assume it means: get up 0.4%,
+        // and don't give it back.
+        //
+        // Note this deliberately does NOT cap the upside — while `change` stays above
+        // the floor the position keeps running, and `cashout` is still the ceiling. It
+        // only fires on the way back down.
+        if position.highest >= sell_floor
+            && position.change < sell_floor
             && position.timeout < timeout_threshold
-            && !position.still_listed
         {
             return ExitDecision::Exit(ExitReason::FloorReached);
         }
@@ -263,7 +281,7 @@ mod tests {
             instid: "BTC-USDT".to_string(),
             change: 0.1,
             timeout: Duration::seconds(58),
-            still_listed: true,
+            highest: 0.1,
             candles: vec![candle(0.2, 500.0); 4],
         }
     }
@@ -457,14 +475,16 @@ mod tests {
     }
 
     #[test]
-    fn exit_should_trigger_floor_when_delisted_below_timeout_threshold() {
-        // Boundary convention: `change` reaches the engine as an exactly
-        // widened f32 (the scheduler stores it as f32). A raw 0.3_f64 would
-        // sit *below* the widened 0.3_f32 sell floor and hold instead.
+    fn exit_should_trigger_floor_when_a_peak_falls_back_below_it() {
+        // Boundary convention: `change` reaches the engine as an exactly widened
+        // f32 (the scheduler stores it as f32), so comparisons use widened f32
+        // literals rather than raw f64 ones.
+        //
+        // Peaked at +0.5%, now back to +0.2% with the floor at 0.3. Take the money.
         let position = PositionView {
-            change: f64::from(0.3_f32),
+            highest: f64::from(0.5_f32),
+            change: f64::from(0.2_f32),
             timeout: Duration::seconds(54),
-            still_listed: false,
             ..holding_position()
         };
         assert_eq!(
@@ -474,11 +494,26 @@ mod tests {
     }
 
     #[test]
-    fn exit_should_hold_at_floor_while_token_is_still_listed() {
+    fn exit_should_hold_while_the_position_is_still_above_the_floor() {
+        // The floor does not cap the upside. Above it, the position keeps running
+        // and `cashout` remains the ceiling; the floor only fires on the way down.
         let position = PositionView {
-            change: f64::from(0.3_f32),
+            highest: f64::from(0.5_f32),
+            change: f64::from(0.4_f32),
             timeout: Duration::seconds(54),
-            still_listed: true,
+            ..holding_position()
+        };
+        assert_eq!(thresholds().exit_decision(&position), ExitDecision::Hold);
+    }
+
+    #[test]
+    fn exit_should_not_trigger_floor_when_the_peak_never_reached_it() {
+        // Never got up 0.3%, so there is nothing to protect. This is a losing trade
+        // and it belongs to the stoploss or the clock, not to the floor.
+        let position = PositionView {
+            highest: f64::from(0.2_f32),
+            change: f64::from(-0.1_f32),
+            timeout: Duration::seconds(54),
             ..holding_position()
         };
         assert_eq!(thresholds().exit_decision(&position), ExitDecision::Hold);
@@ -486,10 +521,11 @@ mod tests {
 
     #[test]
     fn exit_should_hold_at_floor_before_timeout_threshold_is_crossed() {
-        // timeout_threshold = timeout - 5 = 55s; 58s remaining is above it.
+        // timeout_threshold = timeout - 5 = 55s; the default 58s remaining is above
+        // it. Guards against a spike-and-drop closing a position seconds after entry.
         let position = PositionView {
-            change: f64::from(0.3_f32),
-            still_listed: false,
+            highest: f64::from(0.5_f32),
+            change: f64::from(0.2_f32),
             ..holding_position()
         };
         assert_eq!(thresholds().exit_decision(&position), ExitDecision::Hold);

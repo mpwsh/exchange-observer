@@ -1,5 +1,18 @@
 use crate::prelude::*;
 
+/// Half-spread assumed **only when the tickers feed gave us no book**, in basis
+/// points.
+///
+/// `okx.tickers` carries `askpx`/`bidpx` (see `exchange_observer::models::Ticker`
+/// and `TickerRow`) — the real touch is in the database and the scheduler simply
+/// never selected it. Everything below prices against the real bid/ask; this
+/// constant only covers the case where a row comes back without one.
+///
+/// It is deliberately *not* zero: a fallback of "no spread" is what the old
+/// simulator effectively assumed, and it is the assumption that made paper
+/// results look nothing like production.
+const FALLBACK_HALF_SPREAD_BPS: f64 = 10.0;
+
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
 pub enum Status {
     #[default]
@@ -28,6 +41,7 @@ impl Status {
         }
     }
 }
+
 #[serde_with::serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Token {
@@ -38,6 +52,31 @@ pub struct Token {
     pub buy_ts: Duration,
     #[serde(rename = "px")]
     pub price: f64,
+    /// Best ask from the tickers feed. `0.0` when unknown.
+    ///
+    /// New: `update_candles` used to `SELECT last` and nothing else, so every
+    /// order in this system was priced off the last *trade* and the book was
+    /// invisible — on a strategy whose take-profit is 1%, while trading
+    /// instruments thin enough that the spread can be a meaningful part of it.
+    #[serde(default)]
+    pub ask: f64,
+    /// Size resting at the best ask, in base currency. `0.0` = unknown.
+    ///
+    /// This is the number that decides whether we need the `books` channel at
+    /// all. An IOC priced at the ask fills in full iff `size <= ask_sz`; below
+    /// that threshold, level 1 is not an approximation of the book, it *is* the
+    /// book, and depth would tell us nothing. Above it, we're walking into level
+    /// 2 and the fill is worse than we think.
+    ///
+    /// The producer has been writing `asksz` to `okx.tickers` all along.
+    #[serde(default)]
+    pub ask_sz: f64,
+    /// Best bid from the tickers feed. `0.0` when unknown.
+    #[serde(default)]
+    pub bid: f64,
+    /// Size resting at the best bid, in base currency. `0.0` = unknown.
+    #[serde(default)]
+    pub bid_sz: f64,
     pub change: f32,
     pub std_deviation: f32,
     #[serde_as(as = "serde_with::DurationSeconds<i64>")]
@@ -70,17 +109,12 @@ pub struct Candlestick {
     pub low: f64,
     pub open: f64,
     pub range: f64,
-    // Column in Scylla is `volume` (renamed during typed-model migration),
-    // but the field stays `vol` here for backwards compat with the console's
-    // wire format and existing scheduler code. The scylla attribute maps to
-    // the actual DB column name.
     #[scylla(rename = "volume")]
     pub vol: f64,
 }
 
 impl Candlestick {
-    /// Blank candle at `now` (truncated to the minute). Time is passed in as
-    /// data — model constructors never read ambient time.
+    /// Blank candle at `now` (truncated to the minute).
     pub fn new(open: f64, now: DateTime<Utc>) -> Self {
         Self {
             instid: String::new(),
@@ -94,6 +128,7 @@ impl Candlestick {
             vol: 0.0,
         }
     }
+
     pub fn from_tickers(
         instid: &str,
         tickers: &[(f64, f64, DateTime<Utc>)],
@@ -161,6 +196,7 @@ impl Default for Config {
         }
     }
 }
+
 impl Token {
     pub fn new(instid: &str) -> Self {
         Self {
@@ -169,6 +205,10 @@ impl Token {
             buy_price: 0.0,
             buy_ts: Duration::seconds(0),
             price: 0.0,
+            ask: 0.0,
+            ask_sz: 0.0,
+            bid: 0.0,
+            bid_sz: 0.0,
             std_deviation: 0.0,
             balance: Balance {
                 current: 0.0,
@@ -194,6 +234,7 @@ impl Token {
             status: token::Status::Waiting,
         }
     }
+
     pub fn set_cooldown(mut self, cooldown: i64) -> Self {
         self.cooldown = Duration::seconds(cooldown);
         self
@@ -211,6 +252,75 @@ impl Token {
         }
     }
 
+    /// Level 1 of the book for this token.
+    ///
+    /// Falls back to `last` widened by [`FALLBACK_HALF_SPREAD_BPS`] when the feed
+    /// gave us no book, with both sizes marked unknown. The fallback widens rather
+    /// than collapsing to `last` on both sides, because a zero-spread assumption
+    /// is exactly the thing that made the old simulator optimistic.
+    #[must_use]
+    pub fn top_of_book(&self) -> TopOfBook {
+        if self.bid > 0.0
+            && self.ask > 0.0
+            && self.bid.is_finite()
+            && self.ask.is_finite()
+            && self.ask >= self.bid
+        {
+            return TopOfBook {
+                bid: self.bid,
+                bid_sz: self.bid_sz.max(0.0),
+                ask: self.ask,
+                ask_sz: self.ask_sz.max(0.0),
+                synthetic: false,
+            };
+        }
+        let half = FALLBACK_HALF_SPREAD_BPS / 10_000.0;
+        TopOfBook {
+            bid: self.price * (1.0 - half),
+            bid_sz: 0.0,
+            ask: self.price * (1.0 + half),
+            ask_sz: 0.0,
+            synthetic: true,
+        }
+    }
+
+    /// Quoted spread in basis points, or `None` when there is no book.
+    ///
+    /// A round trip already costs `2 x taker_fee` (0.20% at the configured 0.1%);
+    /// the spread is paid on top of that, twice, and against a 1% take-profit it
+    /// is not a rounding error.
+    #[must_use]
+    pub fn spread_bps(&self) -> Option<f64> {
+        if self.bid <= 0.0 || self.ask <= 0.0 || self.ask < self.bid {
+            return None;
+        }
+        let mid = (self.ask + self.bid) / 2.0;
+        (mid > 0.0).then(|| (self.ask - self.bid) / mid * 10_000.0)
+    }
+
+    /// The price we will actually bid to enter: the **ask**, rounded up to the
+    /// instrument tick.
+    ///
+    /// Was `floor_to_step(self.price, meta.tick_sz)` — a bid floored *below* the
+    /// last trade, sent IOC. An IOC only fills against resting liquidity at or
+    /// better than our limit, so that order could only fill when a seller came
+    /// down onto it. Every fill was a fill into weakness; the ones where the move
+    /// continued never happened at all.
+    ///
+    /// Bidding exactly the ask has a second, useful property: we never reach past
+    /// level 1, so `ask_sz` alone tells us the whole truth about the fill. No
+    /// depth data required.
+    #[must_use]
+    pub fn entry_limit(&self, meta: InstrumentMeta) -> f64 {
+        ceil_to_step(self.top_of_book().ask, meta.tick_sz)
+    }
+
+    /// The price we will offer to exit: the **bid**, floored to the tick.
+    #[must_use]
+    pub fn exit_limit(&self, meta: InstrumentMeta) -> f64 {
+        floor_to_step(self.top_of_book().bid, meta.tick_sz)
+    }
+
     pub async fn buy(
         &mut self,
         trade_enabled: bool,
@@ -219,14 +329,13 @@ impl Token {
         now: DateTime<Utc>,
         meta: InstrumentMeta,
     ) -> Result<&Self> {
-        // Round the entry price to the exchange's tick_sz so the order
-        // book match logic can find our bid. Behavior when meta is UNKNOWN
-        // (tick_sz = 0.0): pass through, same as before this change.
-        self.buy_price = floor_to_step(self.price, meta.tick_sz);
+        // Was: `floor_to_step(self.price, meta.tick_sz)` — a bid *below* the
+        // last trade, sent IOC. See `entry_limit`.
+        self.buy_price = self.entry_limit(meta);
         let mut order = trade::Order::new(
             &self.instid,
-            self.buy_price.to_string(),
-            self.balance.start.to_string(),
+            meta.format_price(self.buy_price),
+            meta.format_size(self.balance.start),
             Side::Buy,
             &config.order_type,
             &config.hash,
@@ -237,10 +346,8 @@ impl Token {
 
         Ok(self)
     }
-    /// Applies a strategy exit decision. Mirrors the old `tag_invalid`: while
-    /// the position is `Trading` the exit reason is *replaced* by the
-    /// decision (a `Hold` clears any stale reason), and any set reason moves
-    /// the token to `Selling` and stamps the report.
+
+    /// Applies a strategy exit decision.
     pub fn apply_exit(&mut self, decision: ExitDecision) -> &mut Self {
         if self.status == token::Status::Trading {
             self.exit_reason = match decision {
@@ -269,22 +376,17 @@ impl Token {
                 .unwrap_or(self.balance.available)
         } else {
             self.balance.available
-            /*
-            match self.balance.available {
-                x if x > 1_000_000.0 => ((x / 1_000_000.0).floor() * 1_000_000.0) - 1.0,
-                x if x > 100_000.0 => (x / 100_000.0).floor() * 100_000.0,
-                x if x > 1_000.0 => (x / 1_000.0).floor() * 1_000.0,
-                _ => self.balance.available,
-            }*/
         };
-        // Round sell size down to the instrument's lot_sz. Selling too
-        // much would leave a dust position we can't close cleanly; floor
-        // ensures we never send more than we hold. Cache miss preserves
-        // pre-rounding behavior (lot_sz = 0.0 → pass-through).
         let sell_balance = floor_to_step(raw_sell_balance, meta.lot_sz);
-        let sell_price = floor_to_step(self.price, meta.tick_sz);
+        let sell_price = self.exit_limit(meta);
 
-        //Count sell atempts and sell to market_price if above x
+        // Count sell attempts and go to market if we've been hanging around.
+        //
+        // NOTE: this is the only thing standing between a stoploss decision and
+        // an unbounded loss, and at `cooldown = 5` it lets ~30s elapse before
+        // it fires. If you keep a hard stop, consider dropping the threshold to
+        // 1-2, or attaching an exchange-side trigger order at entry so the stop
+        // survives this process dying.
         let sell_count = self
             .orders
             .as_deref()
@@ -293,7 +395,6 @@ impl Token {
             .filter(|o| o.side == Side::Sell)
             .count();
 
-        //sell to market price if we tried to sell 5 times
         let ord_type = match sell_count {
             x if x <= 5 => &config.order_type,
             _ => "market",
@@ -301,8 +402,8 @@ impl Token {
 
         let mut order = trade::Order::new(
             &self.instid,
-            sell_price.to_string(),
-            sell_balance.to_string(),
+            meta.format_price(sell_price),
+            meta.format_size(sell_balance),
             Side::Sell,
             ord_type,
             &config.hash,
@@ -311,11 +412,9 @@ impl Token {
 
         order.publish(trade_enabled, &auth).await?;
 
-        if order
-            .response
-            .as_ref()
-            .map_or(false, |response| response.code.parse::<i64>().unwrap() != 0)
-        {
+        if order.response.as_ref().is_some_and(|response| {
+            response.code.parse::<i64>().map_or(true, |code| code != 0)
+        }) {
             order.state = OrderState::Failed;
         }
 
@@ -325,80 +424,46 @@ impl Token {
     }
 
     /// Read-only snapshot of this open position for `Strategy::should_exit`.
-    /// `still_listed` is whether the token still appears in the scheduler's
-    /// valid-token list this cycle.
-    pub fn position_view(&self, still_listed: bool) -> PositionView {
+    ///
+    /// No longer takes `still_listed`. The exit rules have no business asking
+    /// whether the token we are *holding* still looks like a fresh *entry* — see
+    /// `Thresholds::exit_decision`. It carries the position's peak instead, which is
+    /// what `sell_floor` was always really about.
+    ///
+    /// `report.highest` is maintained by `update_reports`, which the main loop calls
+    /// immediately before `should_exit`, so this is current.
+    pub fn position_view(&self) -> PositionView {
         PositionView {
             instid: self.instid.clone(),
             change: f64::from(self.change),
+            highest: f64::from(self.report.highest),
             timeout: self.timeout,
-            still_listed,
             candles: self.candlesticks.iter().map(Candlestick::view).collect(),
         }
     }
 
-    pub async fn configure_from_report(
-        &mut self,
-        config: &StrategyConfig,
-        db_session: &Session,
-    ) -> &Self {
-        let mut time_deviation = Vec::new();
-        let mut change_deviation = Vec::new();
-        //Find old reports and try to get better defaults
-        let mut results_count = 0;
-
-        let query = format!(
-            "select count(instid) from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-            self.instid, &config.hash
-        );
-
-        let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
-        let rows_result = result.into_rows_result().unwrap();
-        for row in rows_result.rows::<(i64,)>().unwrap() {
-            let (c,) = row.unwrap();
-            results_count = c;
-        }
-        if results_count >= 1 {
-            let query = format!(
-                "select highest, highest_elapsed from okx.reports where instid='{}' and strategy='{}' allow filtering;",
-                self.instid, config.hash,
-            );
-            let result = db_session.query_unpaged(&*query, &[]).await.unwrap();
-            let rows_result = result.into_rows_result().unwrap();
-            for row in rows_result.rows::<(f64, i64)>().unwrap() {
-                let (highest, highest_elapsed) = row.unwrap();
-                // Report.highest is `double` after schema migration; cast to f32 for
-                // Token's std_deviation helper which operates on f32 slices.
-                change_deviation.push(highest as f32);
-                time_deviation.push(highest_elapsed as f32);
-            }
-            let change_target = std_deviation(&change_deviation[..]).unwrap();
-            let timeout_target =
-                Duration::seconds(std_deviation(&time_deviation[..]).unwrap() as i64);
-
-            if timeout_target.num_seconds() < 30 {
-                self.config.timeout = Duration::seconds(config.timeout);
-                self.timeout = self.config.timeout;
-            } else {
-                self.timeout = timeout_target;
-                self.config.timeout = timeout_target;
-            };
-            if change_target < 0.1 {
-                self.config.sell_floor = config.sell_floor.unwrap();
-            } else {
-                self.config.sell_floor = change_target;
-            };
-        } else {
-            self.timeout = Duration::seconds(config.timeout);
-            self.config.timeout = self.timeout;
-            self.config.sell_floor = config.sell_floor.unwrap();
-        };
+    /// Sets this position's timeout and sell floor from the strategy config.
+    ///
+    /// Replaces `configure_from_report`, which derived both from history: it
+    /// took the **standard deviation** of past `highest` (peak gain) and
+    /// `highest_elapsed` values and used them as this token's sell floor and
+    /// timeout. A standard deviation measures dispersion, not level — the
+    /// numbers only looked plausible by accident.
+    ///
+    /// The real damage was to the reports. It meant a strategy hash described
+    /// two different things: the first trades on a fresh hash ran your config,
+    /// later trades ran values derived from those earlier trades. Nothing
+    /// tagged with a hash was comparable to anything else tagged with the same
+    /// hash, which is fatal if you're trying to A/B configs. It also put two
+    /// `ALLOW FILTERING` queries on the hot path of every entry.
+    pub fn configure(&mut self, config: &StrategyConfig) -> &Self {
+        self.config.timeout = Duration::seconds(config.timeout);
+        self.timeout = self.config.timeout;
+        self.config.sell_floor = config.sell_floor.unwrap_or(0.0);
         self
     }
 
-    /// Read-only snapshot of this candidate token for
-    /// `Strategy::should_enter`. The threshold checks that used to live here
-    /// (`is_valid`) are now `engine::threshold::Thresholds::entry_decision`.
+    /// Read-only snapshot of this candidate token for `Strategy::should_enter`.
     pub fn entry_view(&self, denied: bool) -> TokenView {
         TokenView {
             instid: self.instid.clone(),
@@ -412,7 +477,6 @@ impl Token {
     }
 
     pub fn sum_candles(&mut self) -> &mut Self {
-        // Fold vol, changes, and range across the timeframe window in one pass.
         let (vol, change, range) = self.candlesticks.iter().fold(
             (0.0_f64, 0.0_f64, 0.0_f64),
             |(vol_acc, change_acc, range_acc), x| {
@@ -420,7 +484,6 @@ impl Token {
             },
         );
         self.vol = vol;
-        // Token.change/range are f32 for the console wire format — cast at the boundary.
         if self.status == token::Status::Waiting {
             self.change = change as f32;
         }
@@ -428,8 +491,7 @@ impl Token {
 
         let changes: Vec<f32> = self
             .candlesticks
-            .clone()
-            .into_iter()
+            .iter()
             .map(|x| x.change as f32)
             .collect();
         self.std_deviation = std_deviation(&changes).unwrap_or(0.0);
@@ -456,38 +518,351 @@ impl Token {
         enable_trading: bool,
         auth: &Authentication,
     ) -> Result<&mut Self> {
+        let book = self.top_of_book();
+        let instid = self.instid.clone();
         if let Some(orders) = &mut self.orders {
             for order in orders.iter_mut().filter(|o| {
                 o.state == OrderState::Live
                     && o.prev_state != OrderState::Created
                     && o.state != OrderState::Filled
             }) {
-                log::info!(
-                    "[{}] Checking order state. result: {}",
-                    self.instid,
-                    order.state.to_string()
-                );
                 if enable_trading {
-                    log::info!("[{}] Retrieving order state form exchange", self.instid);
                     let got_state = order.get_state(auth).await?;
                     if order.state != got_state {
-                        order.state = got_state.clone();
+                        order.state = got_state;
                     }
+                    // TODO: `OkxOrderDetails` already carries `avg_px`. Read it
+                    // here and stamp it onto `order.px` so `buy_price` is the
+                    // price we *paid*, not the limit we asked for.
                 } else {
-                    use rand::{thread_rng, Rng};
-                    let mut rng = thread_rng();
-                    let random_state = if rng.gen_bool(1.0 / 6.0) {
-                        OrderState::Filled
-                    } else {
-                        OrderState::Cancelled
-                    };
-
-                    order.state = random_state;
+                    order.state = simulate_ioc_fill(&instid, order, book);
                     order.id = order.cl_ord_id.clone();
-                };
+                }
+
+                // The entry reference for P&L is whatever we actually paid.
+                // In simulation `simulate_ioc_fill` stamps the touch back onto
+                // `order.px`; in live it is still the limit until the TODO above
+                // is done.
+                if order.state == OrderState::Filled && order.side == Side::Buy {
+                    if let Ok(px) = order.px.parse::<f64>() {
+                        self.buy_price = px;
+                    }
+                }
+
                 self.status = Status::from_order(order);
             }
         }
         Ok(self)
+    }
+}
+
+/// Level 1 of the order book, as OKX's `tickers` channel delivers it.
+///
+/// This is not a proxy for the book — it *is* the book, truncated to its best
+/// level. `askPx` is the cheapest resting sell order and `askSz` is how much of
+/// it there is. The `books` channel would add levels 2..N and nothing else.
+///
+/// Because every entry is priced at exactly the ask (see [`Token::entry_limit`]),
+/// an IOC never reaches past this level. `ask_sz` therefore answers the whole
+/// question on its own: the order fills in full iff `size <= ask_sz`. Depth data
+/// is only needed to price the fills we have decided not to take.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopOfBook {
+    pub bid: f64,
+    /// Size resting at the bid. `0.0` means *unknown*, not *empty*.
+    pub bid_sz: f64,
+    pub ask: f64,
+    /// Size resting at the ask. `0.0` means *unknown*, not *empty*.
+    pub ask_sz: f64,
+    /// True when bid/ask were synthesized from `last` because the feed gave us
+    /// no book.
+    pub synthetic: bool,
+}
+
+impl TopOfBook {
+    /// Whether `size` (base currency) fits inside the best ask.
+    ///
+    /// An unknown `ask_sz` returns `true`: we do not gate on data we do not have.
+    /// That is a deliberate optimism, and `synthetic` marks where it applies.
+    #[must_use]
+    pub fn ask_covers(&self, size: f64) -> bool {
+        self.ask_sz <= 0.0 || size <= self.ask_sz
+    }
+
+    /// Whether `size` fits inside the best bid.
+    #[must_use]
+    pub fn bid_covers(&self, size: f64) -> bool {
+        self.bid_sz <= 0.0 || size <= self.bid_sz
+    }
+
+    /// Quote-currency notional resting at the best ask — the number to compare
+    /// `account.spendable` against when deciding whether an instrument is deep
+    /// enough to trade at all.
+    #[must_use]
+    pub fn ask_notional(&self) -> f64 {
+        self.ask * self.ask_sz
+    }
+}
+
+/// Fill model for `exchange.enable_trading = false`.
+///
+/// The old model was:
+///
+/// ```ignore
+/// let random_state = if rng.gen_bool(1.0 / 6.0) { Filled } else { Cancelled };
+/// ```
+///
+/// A coin flip, independent of price, direction, spread, size and book. It filled
+/// a buy into a rising market exactly as readily as into a falling one, at the
+/// last trade price, with zero slippage. That is the assumption that hides adverse
+/// selection: in production an IOC bid below the ask does not fill *at all*, and
+/// the ones that do fill are the ones the market is running away from. Every
+/// "we almost break even" number came through that function.
+///
+/// What decides an IOC's fate is two questions, and this models both:
+///
+/// ```text
+///   1. does our limit cross?      buy: limit >= ask     sell: limit <= bid
+///   2. is there enough there?     buy: size <= ask_sz   sell: size <= bid_sz
+/// ```
+///
+/// Both come from `okx.tickers`, so this is the real quoted book on the real
+/// instrument — no constants, no depth data needed. A crossed IOC pays the touch,
+/// not our limit, so the effective price is written back onto the order and
+/// `buy_price` becomes what we would actually have paid.
+///
+/// **Size that exceeds the touch is treated as a cancel, not a partial fill.**
+/// A real IOC would fill `ask_sz` and cancel the rest, leaving a position smaller
+/// than intended; the scheduler's state machine has no honest path for that
+/// (`Status::from_order` maps a filled sell straight to `Exited`, so a partial
+/// exit would strand the remainder). Refusing the trade is the conservative
+/// reading and it matches the entry guard in `buy_tokens`, which skips these
+/// before an order is ever built.
+///
+/// **The one place this still flatters us** is a `market` sell whose size exceeds
+/// `bid_sz` — the fallback after five failed IOC exits. A real market order walks
+/// down the book and fills at an average worse than the bid; level-1 data cannot
+/// tell us how much worse. Rather than invent a number, it fills at the bid and
+/// logs a warning. Grep for `sim fill exceeded top of book`: if that line is rare,
+/// level 1 is enough and the `books` channel would buy you nothing. If it is
+/// common, you are too large for the instruments you are trading, and depth data
+/// would only measure the damage more precisely.
+///
+/// Still not modeled: queue position, latency (the book you read is as of the last
+/// Scylla write, and a real order arrives against a book that has moved), and
+/// partial fills. Treat the output as an upper bound on live performance.
+fn simulate_ioc_fill(instid: &str, order: &mut Order, book: TopOfBook) -> OrderState {
+    if !book.bid.is_finite() || !book.ask.is_finite() || book.bid <= 0.0 || book.ask <= 0.0 {
+        return OrderState::Cancelled;
+    }
+    let Ok(size) = order.sz.parse::<f64>() else {
+        return OrderState::Failed;
+    };
+
+    if order.ord_type.eq_ignore_ascii_case("market") {
+        let (touch, covered) = match order.side {
+            Side::Buy => (book.ask, book.ask_covers(size)),
+            Side::Sell => (book.bid, book.bid_covers(size)),
+        };
+        if !covered {
+            log::warn!(
+                "[{}] sim fill exceeded top of book: {} {:.8} vs resting {:.8}. \
+                 Filling at the touch anyway — a real market order would walk the \
+                 book and do worse. This number is optimistic.",
+                instid,
+                order.side.to_string(),
+                size,
+                match order.side {
+                    Side::Buy => book.ask_sz,
+                    Side::Sell => book.bid_sz,
+                }
+            );
+        }
+        order.px = touch.to_string();
+        return OrderState::Filled;
+    }
+
+    let Ok(limit) = order.px.parse::<f64>() else {
+        return OrderState::Failed;
+    };
+
+    match order.side {
+        Side::Buy if limit >= book.ask => {
+            if !book.ask_covers(size) {
+                log::debug!(
+                    "[{}] sim buy cancelled: size {:.8} > best ask size {:.8}",
+                    instid,
+                    size,
+                    book.ask_sz
+                );
+                return OrderState::Cancelled;
+            }
+            order.px = book.ask.to_string();
+            OrderState::Filled
+        },
+        Side::Sell if limit <= book.bid => {
+            if !book.bid_covers(size) {
+                log::debug!(
+                    "[{}] sim sell cancelled: size {:.8} > best bid size {:.8}",
+                    instid,
+                    size,
+                    book.bid_sz
+                );
+                return OrderState::Cancelled;
+            }
+            order.px = book.bid.to_string();
+            OrderState::Filled
+        },
+        _ => OrderState::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn order(side: Side, ord_type: &str, px: f64, sz: f64) -> Order {
+        Order::new(
+            "TEST-USDT",
+            px.to_string(),
+            sz.to_string(),
+            side,
+            ord_type,
+            "hash",
+            DateTime::from_timestamp(0, 0).expect("epoch"),
+        )
+    }
+
+    /// A token quoting 99.95 x 500 / 100.05 x 500, last trade 100.00.
+    fn quoted() -> Token {
+        let mut t = Token::new("TEST-USDT");
+        t.price = 100.0;
+        t.bid = 99.95;
+        t.bid_sz = 500.0;
+        t.ask = 100.05;
+        t.ask_sz = 500.0;
+        t
+    }
+
+    fn book() -> TopOfBook {
+        quoted().top_of_book()
+    }
+
+    #[test]
+    fn entry_limit_should_take_the_ask_not_undercut_the_last_trade() {
+        // The old code bid floor(100.00) and waited. This bids the offer.
+        let limit = quoted().entry_limit(InstrumentMeta::UNKNOWN);
+        assert!((limit - 100.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exit_limit_should_hit_the_bid() {
+        let limit = quoted().exit_limit(InstrumentMeta::UNKNOWN);
+        assert!((limit - 99.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spread_bps_should_report_the_quoted_spread() {
+        let spread = quoted().spread_bps().expect("book present");
+        assert!((spread - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn top_of_book_should_widen_the_last_trade_when_the_book_is_missing() {
+        let mut t = Token::new("TEST-USDT");
+        t.price = 100.0;
+        let b = t.top_of_book();
+        assert!(b.synthetic && b.bid < 100.0 && b.ask > 100.0);
+    }
+
+    #[test]
+    fn unknown_ask_size_should_not_block_the_trade() {
+        // We do not gate on data we do not have; `synthetic` marks where this
+        // optimism applies.
+        let mut t = Token::new("TEST-USDT");
+        t.price = 100.0;
+        assert!(t.top_of_book().ask_covers(1_000_000.0));
+    }
+
+    #[test]
+    fn ask_notional_should_report_the_quote_currency_resting_at_the_ask() {
+        // 500 units at 100.05 — the number to compare `spendable` against.
+        assert!((book().ask_notional() - 50_025.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sim_buy_at_the_last_trade_should_not_fill() {
+        // Exactly what the old `floor_to_step(price, tick)` bid produced.
+        let mut o = order(Side::Buy, "ioc", 100.0, 10.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Cancelled
+        );
+    }
+
+    #[test]
+    fn sim_buy_that_crosses_the_ask_should_fill() {
+        let mut o = order(Side::Buy, "ioc", 100.05, 10.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Filled
+        );
+    }
+
+    #[test]
+    fn sim_buy_should_pay_the_ask_not_our_limit() {
+        let mut o = order(Side::Buy, "ioc", 100.20, 10.0);
+        simulate_ioc_fill("TEST-USDT", &mut o, book());
+        let paid: f64 = o.px.parse().expect("numeric");
+        assert!((paid - 100.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sim_buy_larger_than_the_best_ask_should_not_fill() {
+        // 600 units against 500 resting. A real IOC would take 500 and cancel the
+        // rest; we refuse rather than open a position we can't size honestly.
+        let mut o = order(Side::Buy, "ioc", 100.05, 600.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Cancelled
+        );
+    }
+
+    #[test]
+    fn sim_sell_that_crosses_the_bid_should_fill() {
+        let mut o = order(Side::Sell, "ioc", 99.95, 10.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Filled
+        );
+    }
+
+    #[test]
+    fn sim_sell_larger_than_the_best_bid_should_not_fill() {
+        // Falls through to the sell-retry loop, and to `market` after 5 attempts.
+        let mut o = order(Side::Sell, "ioc", 99.95, 600.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Cancelled
+        );
+    }
+
+    #[test]
+    fn sim_market_order_should_always_fill() {
+        let mut o = order(Side::Buy, "market", 0.0, 10.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Filled
+        );
+    }
+
+    #[test]
+    fn sim_market_order_beyond_the_touch_still_fills_but_is_optimistic() {
+        // The one place the simulator knowingly flatters itself. It warns.
+        let mut o = order(Side::Sell, "market", 0.0, 600.0);
+        assert_eq!(
+            simulate_ioc_fill("TEST-USDT", &mut o, book()),
+            OrderState::Filled
+        );
     }
 }

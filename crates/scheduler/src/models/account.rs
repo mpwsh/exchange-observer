@@ -188,17 +188,28 @@ impl Account {
         self
     }
 
+    /// Drops finished positions — and, now, entries that never filled.
+    ///
+    /// The old predicate was `waiting || live_orders || remaining_balance`. A
+    /// cancelled buy sets the token's status to `Waiting` (see
+    /// `Status::from_order`), so `waiting` was true and the token was kept
+    /// indefinitely — which is what let `buy_tokens` re-bid it every cycle while
+    /// its timeout refilled itself.
+    ///
+    /// A token that has orders, none of them live, and no balance is done: either
+    /// it filled and sold out, or its entry never filled at all. Either way it
+    /// goes, and it becomes a candidate again on its own merits once its cooldown
+    /// expires and it re-passes `should_enter`.
     pub fn clean_portfolio(&mut self) -> &Self {
         self.portfolio.retain(|t| {
-            let waiting = t.status == token::Status::Waiting;
-            let live_orders = if let Some(orders) = t.orders.as_deref() {
-                orders.iter().any(|o| o.state == OrderState::Live)
-            } else {
-                true
-            };
-
+            let orders = t.orders.as_deref().unwrap_or_default();
+            // Added this cycle; `buy_tokens` issues its order next.
+            if orders.is_empty() {
+                return true;
+            }
+            let live_orders = orders.iter().any(|o| o.state == OrderState::Live);
             let remaining_balance = t.balance.available * t.price > 2.0;
-            let retain = waiting || live_orders || remaining_balance;
+            let retain = live_orders || remaining_balance;
             if !retain {
                 log::info!(
                     "Removing token: {} -- token state: {:?}",
@@ -211,12 +222,25 @@ impl Account {
         self
     }
 
+    /// Moves a candidate into the portfolio.
+    ///
+    /// The book (`ask`/`bid` and their sizes) is copied along with the price.
+    /// It has to be: `buy_tokens` prices the order off *this* copy in the same
+    /// cycle, via `Token::entry_limit`, and a `Token::new` starts with
+    /// `ask = bid = 0.0` — which `top_of_book()` reads as "no book" and falls back
+    /// to a synthetic spread around `last`. The order would then be priced off a
+    /// guess while the *sizing* decision that authorized it was made against the
+    /// real ask. Same trade, two different books.
     pub fn add_token(&mut self, token: &Token, config: &StrategyConfig) -> &Self {
         if self.balance.available >= self.balance.spendable
             && self.portfolio.len() < config.portfolio_size as usize
         {
             let mut t = Token::new(&token.instid);
             t.price = token.price;
+            t.ask = token.ask;
+            t.ask_sz = token.ask_sz;
+            t.bid = token.bid;
+            t.bid_sz = token.bid_sz;
             t.status = token::Status::Buying;
             t.candlesticks = token.candlesticks.clone();
             self.portfolio.push(t);

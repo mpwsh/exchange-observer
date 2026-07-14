@@ -11,9 +11,9 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    StrategyConfig,
     clock::Clock,
     views::{PortfolioView, PositionView, TokenView},
-    StrategyConfig,
 };
 
 /// Everything a strategy may consult besides the token/position itself.
@@ -39,6 +39,37 @@ pub trait Strategy: Send + Sync {
 
     /// Decide whether to close the open `position`.
     fn should_exit(&self, ctx: &Context<'_>, position: &PositionView) -> ExitDecision;
+
+    /// Score a candidate token for ranking within the pool.
+    ///
+    /// The scheduler fetches a universal candidate pool each cycle and
+    /// keeps only the top-N by this score (higher = better). Different
+    /// strategies want different candidates:
+    ///
+    /// - Momentum wants tokens with the largest positive change (default).
+    /// - Reversion wants tokens with the largest negative dip.
+    ///
+    /// Default returns `token.change`, preserving the pre-trait ranking of
+    /// "sort by change descending" that `ThresholdStrategy` relied on.
+    /// Strategies whose ideal candidate isn't "highest change" override.
+    /// The signal values behind an entry, for the reports table.
+    ///
+    /// Called only when `should_enter` returned `Enter`, so recomputing the window
+    /// sums here costs a handful of adds on at most `portfolio_size` tokens per
+    /// cycle. Strategies with no such concept inherit zeros.
+    fn entry_signal(&self, _ctx: &Context<'_>, _token: &TokenView) -> EntrySignal {
+        EntrySignal::default()
+    }
+
+    /// Rank by how *deep* the recent dip is: score = `-dip_sum`, so the deepest
+    /// dips get the highest score. The bounce check still gates entry, so a
+    /// deeply-dipped token without a bounce won't trade — it just wins the
+    /// ranking race against tokens that aren't dipping at all.
+    ///
+    /// Falls back to `token.change` when the window arithmetic doesn't fit.
+    fn rank_score(&self, ctx: &Context<'_>, token: &TokenView) -> f64 {
+        token.change
+    }
 }
 
 /// Typed entry decision. `Skip` carries a reason so logs show *why* a
@@ -52,6 +83,28 @@ pub enum EnterDecision {
     },
     /// Do not enter; the payload names the failed check.
     Skip(&'static str),
+}
+
+/// Diagnostic snapshot of the signal that fired an entry.
+///
+/// Written to `okx.reports` alongside the outcome, because without it the
+/// reports record *what happened* and never *why we were there*. A question like
+/// "do deeper dips produce better trades?" — the question that decides `min_dip`
+/// — cannot be answered from the data at all, so the threshold ends up being set
+/// by argument instead of evidence. That is exactly how `configure_from_report`
+/// happened.
+///
+/// Deliberately **not** part of [`EnterDecision`]. The enum is the *decision*;
+/// bolting strategy-specific diagnostics onto it would force every caller and
+/// every test to carry fields they don't use. This is a separate, optional query,
+/// asked only of entries that actually fired.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct EntrySignal {
+    /// Cumulative change over the dip window, in percent. Negative for a real
+    /// dip. Zero for strategies that have no such concept.
+    pub dip: f64,
+    /// Cumulative change over the bounce window, in percent.
+    pub bounce: f64,
 }
 
 /// Typed exit decision.

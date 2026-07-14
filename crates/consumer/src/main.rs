@@ -145,10 +145,26 @@ async fn build_prepared_statements(session: &DbSession, cfg: &AppConfig) -> Resu
           low24h, open24h, sodutc0, sodutc8, ts, vol24h, volccy24h) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL {ttl}"
     );
+    // `confirm` is new (OKX element 8: false while the bar is still being built).
+    //
+    // `AND TIMESTAMP ?` is the important part. Every push OKX sends for a given
+    // minute upserts the same (instid, ts) row, and `dispatch_record` inserts each
+    // record in its own task with MAX_INFLIGHT_INSERTS in flight — so Kafka's
+    // ordering is discarded before the write lands. Scylla breaks same-cell ties
+    // by the write timestamp the *coordinator* assigns on arrival, which means a
+    // `confirm = true` push that happens to land ahead of an earlier partial push
+    // for the same bar LOSES, and that bar stays permanently truncated. Nothing
+    // repairs it; the next minute writes a different row.
+    //
+    // Binding the timestamp from the Kafka record (set by the producer in
+    // `build_record`) makes the later-produced message win regardless of execution
+    // order. Only candle1m needs this: `trades` and `books` have unique clustering
+    // keys and never conflict, and for `tickers` the worst case is keeping one of
+    // two ticks from the same millisecond.
     let candle_cql = format!(
         "INSERT INTO {ks}.candle1m \
-         (instid, open, high, low, close, volume, change, range, ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL {ttl}"
+         (instid, open, high, low, close, volume, change, range, ts, confirm) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL {ttl} AND TIMESTAMP ?"
     );
     let trades_cql = format!(
         "INSERT INTO {ks}.trades \
@@ -195,6 +211,11 @@ async fn dispatch_record(
         .map_err(|_| ConsumerError::MissingField("record.key(utf8)"))?
         .to_owned();
 
+    // Producer-assigned, monotonic in the order OKX pushed the messages. Used as
+    // the Scylla write timestamp for candle1m so that out-of-order execution below
+    // cannot let a stale partial bar overwrite a completed one.
+    let write_ts_micros = record.timestamp.timestamp_micros();
+
     let value = record
         .value
         .as_deref()
@@ -221,7 +242,7 @@ async fn dispatch_record(
 
     tokio::spawn(async move {
         let _permit = permit;
-        let result = insert_payload(&session, &prepared, &payload).await;
+        let result = insert_payload(&session, &prepared, &payload, write_ts_micros).await;
         match result {
             Ok(warnings) => {
                 if !warnings.is_empty() {
@@ -247,6 +268,7 @@ async fn insert_payload(
     session: &DbSession,
     prepared: &PreparedStmts,
     payload: &RowPayload,
+    write_ts_micros: i64,
 ) -> Result<Vec<String>> {
     let result = match payload {
         RowPayload::Ticker { inst_id, row } => {
@@ -255,8 +277,12 @@ async fn insert_payload(
                 .await?
         },
         RowPayload::Candle { inst_id, row } => {
+            // The trailing element binds `USING TIMESTAMP` — see
+            // `models::CandleRow`. Note it is the *record's* timestamp, not the
+            // candle's: every push for a bar carries the same candle `ts`, so that
+            // could not break the tie between them.
             session
-                .execute_unpaged(&prepared.candle1m, row.to_row(inst_id))
+                .execute_unpaged(&prepared.candle1m, row.to_row(inst_id, write_ts_micros))
                 .await?
         },
         RowPayload::Trade { inst_id, row } => {

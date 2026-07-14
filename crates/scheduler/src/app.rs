@@ -8,6 +8,27 @@ use pushover_rs::{
 
 use crate::prelude::*;
 
+/// An entry the strategy authorized this cycle, carried from the decision loop to
+/// the order loop.
+///
+/// Everything here is captured from the **candidate** token, not the portfolio
+/// copy. `Account::add_token` builds a fresh `Token`, and anything it doesn't
+/// explicitly copy comes back as zero — which is how the book nearly ended up
+/// being read as "missing" at the exact moment we priced the order off it. Same
+/// trap, so we don't go near it: the values that justified the trade travel with
+/// the trade.
+#[derive(Debug, Clone, Copy)]
+struct PendingEntry {
+    /// Base-currency size, floored to `lot_sz` and checked against `min_sz`.
+    size: f64,
+    /// The dip and bounce that actually fired.
+    signal: EntrySignal,
+    /// The token's volatility at entry.
+    std_deviation: f64,
+    /// The quoted spread at entry, in basis points.
+    spread_bps: f64,
+}
+
 #[derive(Debug)]
 pub struct App {
     /// The single source of time for the scheduler (hexagonal Clock port).
@@ -23,33 +44,39 @@ pub struct App {
     pub exchange: Exchange,
     pub deny_list: Vec<String>,
     pub db_session: Arc<Session>,
-    /// If set, closed reports are fanned out through this channel to the
-    /// WS transmit task. `None` when the console/server is disabled.
     pub report_tx: Option<tokio::sync::mpsc::Sender<crate::ws::channel::Data>>,
-    /// Round-ids we've already emitted report events for this session.
-    /// The `sell_tokens` guard re-fires every cycle while a token is in
-    /// `Selling` status with an unfilled sell order; Scylla dedups on the
-    /// primary key so the DB stays clean, but the WS stream would show N
-    /// duplicates. Simple set keeps emit idempotent.
     pub emitted_reports: std::collections::HashSet<u64>,
-    /// Precision + minimum-size metadata for every spot instrument,
-    /// fetched from OKX at startup. Order construction rounds size to
-    /// `lot_sz` and price to `tick_sz` per instrument. Missing entries
-    /// fall back to `InstrumentMeta::UNKNOWN`, which is the pre-rounding
-    /// behavior — safe when OKX is unreachable at boot.
     pub instruments: std::collections::HashMap<String, InstrumentMeta>,
+    /// Per-token cooldown, keyed by instid, surviving `clean_top`.
+    ///
+    /// It used to live on the `Token` inside `self.tokens` — a vector that
+    /// `clean_top` truncates to `top` entries every single cycle. A token that fell
+    /// out of the top N was destroyed, and `fetch_tokens` rebuilt it next cycle
+    /// with a *fresh full* cooldown. So a token could only become eligible to trade
+    /// by holding a top-N rank **continuously** for `cooldown` seconds of wall
+    /// time; anything that flickered in and out had its clock reset forever and
+    /// could never be bought at all.
+    ///
+    /// Combined with `rank_score = -dip_sum` — under which a token in a sustained
+    /// downtrend has the deepest dip by construction, and therefore a permanent
+    /// top-N seat — the two built a machine that could only buy tokens that were
+    /// still falling. A 1000-token universe funnelled into whichever name was
+    /// bleeding out hardest. PI-USDT: 7 of 9 trades, and more than all of the loss.
+    ///
+    /// Only tokens actually cooling down are kept; expired entries are dropped, so
+    /// this stays small rather than growing to the size of the universe.
+    pub cooldowns: HashMap<String, Duration>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Time {
     pub started: DateTime<Utc>,
     pub utc: DateTime<Utc>,
-    /// Monotonic reading taken at the start of the current cycle; spans are
-    /// measured as `clock.monotonic() - time.mono` (replaces `Instant`).
     pub mono: time::Duration,
     pub elapsed: Duration,
     pub uptime: Duration,
 }
+
 impl Time {
     pub fn new(clock: &dyn Clock) -> Self {
         Self {
@@ -61,6 +88,7 @@ impl Time {
         }
     }
 }
+
 impl App {
     pub async fn init(cfg: &AppConfig, clock: Arc<dyn Clock>) -> Result<Self> {
         let db_uri = format!("{}:{}", cfg.database.ip, cfg.database.port);
@@ -72,32 +100,23 @@ impl App {
         session.use_keyspace(&cfg.database.keyspace, false).await?;
         let session = Arc::new(session);
 
-        // Fetch instrument precision metadata once. On failure we still
-        // boot with an empty map — order construction falls back to
-        // InstrumentMeta::UNKNOWN, which preserves pre-rounding behavior.
-        // Better to run without rounding than not run at all.
         let instruments = match crate::okx::fetch_spot_instruments().await {
             Ok(list) => {
                 let mut map = std::collections::HashMap::with_capacity(list.len());
                 let mut skipped = 0usize;
                 for raw in list {
-                    // Only trade live instruments; parked ones would just
-                    // clutter the map. Also skip if any critical field
-                    // failed to parse — safer than 0.0 defaults that
-                    // could imply "no lot size" when the real meaning is
-                    // "malformed response".
                     if raw.state != "live" {
                         continue;
                     }
-                    let (Ok(lot_sz), Ok(tick_sz), Ok(min_sz)) = (
-                        raw.lot_sz.parse::<f64>(),
-                        raw.tick_sz.parse::<f64>(),
-                        raw.min_sz.parse::<f64>(),
-                    ) else {
-                        skipped += 1;
-                        continue;
-                    };
-                    map.insert(raw.inst_id, InstrumentMeta { lot_sz, tick_sz, min_sz });
+                    // `from_raw` keeps the decimal precision of the original
+                    // strings, which `parse::<f64>()` throws away and
+                    // `to_string()` then reinvents as 333.33000000000004.
+                    match InstrumentMeta::from_raw(&raw) {
+                        Some(meta) => {
+                            map.insert(raw.inst_id, meta);
+                        },
+                        None => skipped += 1,
+                    }
                 }
                 log::info!(
                     "Loaded precision metadata for {} instruments ({} skipped)",
@@ -127,15 +146,15 @@ impl App {
             term: Term::stdout(),
             pushover: cfg.pushover.clone().unwrap_or_default(),
             db_session: session,
-            // Wired later in main() if the WS server is enabled.
             report_tx: None,
             emitted_reports: std::collections::HashSet::new(),
             instruments,
+            cooldowns: HashMap::new(),
         })
     }
+
     pub async fn send_notifications(&self, account: &Account) -> Result<()> {
         for t in account.portfolio.iter() {
-            //send notifications
             if let Some(reason) = t.exit_reason.as_ref() {
                 match reason {
                     ExitReason::Cashout => {
@@ -164,17 +183,21 @@ impl App {
         }
         Ok(())
     }
+
     pub async fn notify(&self, title: String, msg: String) -> Result<PushoverResponse> {
         let now = self.time.utc.timestamp();
         let message: Message = MessageBuilder::new(&self.pushover.key, &self.pushover.token, &msg)
             .set_title(&title)
-            //.add_url("https://pushover.net/", Some("Pushover"))
             .set_priority(-1)
             .set_sound(PushoverSound::GAMELAN)
             .set_timestamp(now as u64)
             .build();
 
-        Ok(send_pushover_request(message).await.unwrap())
+        // Was `.unwrap()`. A flaky notification provider should not be able to
+        // kill a process that is holding open positions.
+        send_pushover_request(message)
+            .await
+            .map_err(|e| anyhow::anyhow!("pushover request failed: {e:?}"))
     }
 
     pub async fn get_tickers(&mut self) -> Result<&mut Self> {
@@ -195,30 +218,30 @@ impl App {
         }
         Ok(self)
     }
-    pub fn update_timeouts(&mut self, mut tokens: Vec<Token>, config: &StrategyConfig) -> Vec<Token> {
-        let now = self.clock.now_utc();
-        self.tokens.iter().for_each(|s| {
-            if let Some(token) = tokens.iter_mut().find(|t| t.instid == s.instid) {
-                if token
-                    .candlesticks
-                    .last()
-                    .unwrap_or(&Candlestick::new(token.price, now))
-                    .change
-                    > config.min_change as f64
-                {
-                    token.timeout = token.config.timeout
-                }
-            }
-        });
 
+    /// Counts the clock down on every open position.
+    ///
+    /// The old implementation did two things that combined badly:
+    ///
+    /// 1. It only decremented `timeout` while the token was **off** the top-N
+    ///    list (`if !self.tokens.iter().any(...)`). A position that stayed in
+    ///    the top list — which, having just been ranked into it, most of them
+    ///    do — never aged, so `timeout = 240` was never enforced on winners.
+    /// 2. It reset `timeout` to full whenever the last candle's change exceeded
+    ///    `min_change`. At `min_change = 0.0` that is *any green minute*.
+    ///
+    /// And the second clause (`change == 0.0 && timeout <= 0`) refilled the
+    /// clock of any position with exactly zero change — which includes every
+    /// **unfilled** entry, because `buy_price` is 0.0 until the buy fills, so
+    /// `get_percentage_diff` returns 0.0. Unfilled entries never expired. That
+    /// is what let the re-bid loop in `buy_tokens` run forever.
+    ///
+    /// Time in a trade always runs. `timeout` now means what it says.
+    pub fn update_timeouts(&mut self, mut tokens: Vec<Token>) -> Vec<Token> {
         for t in tokens.iter_mut() {
-            if !self.tokens.iter_mut().any(|top| top.instid == t.instid) {
-                t.timeout -= self.time.elapsed;
-            };
-
-            if t.change == 0.0 && t.timeout.num_seconds() <= 0 {
-                t.timeout = Duration::seconds(config.timeout)
-            };
+            if matches!(t.status, token::Status::Trading | token::Status::Selling) {
+                t.timeout = t.timeout - self.time.elapsed;
+            }
         }
         tokens
     }
@@ -247,7 +270,7 @@ impl App {
             .unwrap()
             .with_nanosecond(0)
             .unwrap();
-        //last -timeframe- candles
+
         let get_candles_query = self
             .db_session
             .prepare(
@@ -256,7 +279,6 @@ impl App {
             )
             .await?;
 
-        //Last min tickers
         let get_tickers_query = self
             .db_session
             .prepare(
@@ -264,10 +286,23 @@ impl App {
             )
             .await?;
 
-        //Current price
+        // `okx.tickers` has carried askpx/asksz/bidpx/bidsz since the producer
+        // was written (see `exchange_observer::models::TickerRow`); the scheduler
+        // only ever selected `last`, so every order in this system was priced off
+        // the last *trade* and the book was invisible.
+        //
+        // The sizes matter as much as the prices. Every entry is priced at exactly
+        // the ask, so an IOC never reaches past level 1 — which means `asksz`
+        // alone decides whether the order fills in full. It is also the number
+        // that tells you whether the `books` channel is worth subscribing to at
+        // all: if `spendable` sits comfortably inside `askpx * asksz`, depth data
+        // would tell you nothing you don't already have.
         let get_price_query = self
             .db_session
-            .prepare("SELECT last FROM tickers WHERE instid=? LIMIT 1")
+            .prepare(
+                "SELECT last, askpx, asksz, bidpx, bidsz \
+                 FROM tickers WHERE instid=? LIMIT 1",
+            )
             .await?;
 
         stream::iter(tokens.into_iter().map(|mut token| {
@@ -275,7 +310,6 @@ impl App {
             let get_ticker_stmt = get_tickers_query.clone();
             let get_price_stmt = get_price_query.clone();
             async move {
-                //Get all candles in the selected timeframe
                 let result = self
                     .db_session
                     .execute_unpaged(&get_candle_stmt, (&token.instid, dt, timeframe as i32))
@@ -295,19 +329,23 @@ impl App {
                     _ => dt,
                 };
 
-                //Token price
                 let price_result = self
                     .db_session
                     .execute_unpaged(&get_price_stmt, (&token.instid,))
                     .await?;
                 let price_rows = price_result.into_rows_result()?;
-                let tickers: Vec<(f64,)> = price_rows
-                    .rows::<(f64,)>()?
+                let tickers: Vec<(f64, f64, f64, f64, f64)> = price_rows
+                    .rows::<(f64, f64, f64, f64, f64)>()?
                     .filter_map(Result::ok)
                     .collect();
-                token.price = tickers.last().map(|t| t.0).unwrap_or(token.price);
+                if let Some(&(last, ask, ask_sz, bid, bid_sz)) = tickers.last() {
+                    token.price = last;
+                    token.ask = ask;
+                    token.ask_sz = ask_sz;
+                    token.bid = bid;
+                    token.bid_sz = bid_sz;
+                }
 
-                //Last candle built from last minute of tickers
                 let ticker_result = self
                     .db_session
                     .execute_unpaged(&get_ticker_stmt, (&token.instid, last_min))
@@ -322,13 +360,7 @@ impl App {
                     a.ts.partial_cmp(&b.ts)
                         .expect("unable to compare timestamps")
                 });
-                // If tickers came back with data for the in-progress minute,
-                // fold it in. If tickers are empty, DON'T synthesize a blank
-                // candle — appending vol=0 change=0 poisons the strategy's
-                // last-candle checks and looks like the token had no activity
-                // when what actually happened is nobody traded yet this minute.
-                // Skipping lets `should_enter` evaluate against the last real
-                // completed candle from Scylla, which is the honest reading.
+
                 if let Some(mut last_candle) =
                     Candlestick::from_tickers(&token.instid, &tickers, self.clock.now_utc())
                 {
@@ -364,94 +396,216 @@ impl App {
         strategy: &dyn Strategy,
         config: &StrategyConfig,
     ) -> Result<Account> {
-        //Add to portfolio first
-        let mut entry_sizes: HashMap<String, f64> = HashMap::new();
+        // instid -> everything the order loop needs, captured at the moment the
+        // decision was made. Sizing and diagnostics live next to the decision so
+        // they cannot drift apart from it.
+        let mut pending: HashMap<String, PendingEntry> = HashMap::new();
+
         for token in self.tokens.iter_mut() {
-            if token.cooldown <= Duration::milliseconds(0)
-                && !account.portfolio.iter().any(|p| token.instid == p.instid)
+            if token.cooldown > Duration::milliseconds(0)
+                || account.portfolio.iter().any(|p| token.instid == p.instid)
             {
-                let portfolio_view = account.portfolio_view();
-                let ctx = Context {
-                    clock: self.clock.as_ref(),
-                    config,
-                    portfolio: &portfolio_view,
-                };
-                let denied = self
-                    .deny_list
-                    .iter()
-                    .any(|i| format!("{}-USDT", i) == token.instid);
-
-                // Tokens here already passed `should_enter` in
-                // `filter_invalid` and none of its inputs change in between,
-                // so this re-evaluation always agrees; it exists to source
-                // the position size from the strategy rather than hardcode it.
-                match strategy.should_enter(&ctx, &token.entry_view(denied)) {
-                    EnterDecision::Enter { size_quote } => {
-                        account.add_token(token, config);
-                        entry_sizes.insert(token.instid.clone(), size_quote);
-                    },
-                    EnterDecision::Skip(reason) => {
-                        log::debug!("[{}] entry skipped by {}: {}", token.instid, strategy.name(), reason);
-                    },
-                }
-                token.cooldown = self.cooldown;
+                continue;
             }
-        }
-        //trigger order creation
-        for t in account.portfolio.iter_mut() {
-            // Read-only check — iterate borrowed slice, no clone needed.
-            let buy_orders = t
-                .orders
-                .as_deref()
-                .unwrap_or_default()
+
+            let portfolio_view = account.portfolio_view();
+            let ctx = Context {
+                clock: self.clock.as_ref(),
+                config,
+                portfolio: &portfolio_view,
+            };
+            let denied = self
+                .deny_list
                 .iter()
-                .any(|o| o.side == Side::Buy && o.state != OrderState::Cancelled);
+                .any(|i| format!("{}-USDT", i) == token.instid);
 
-            if !buy_orders {
-                // Fresh entries are sized by the strategy's decision;
-                // re-buys after a cancelled order (no fresh decision this
-                // cycle) keep the original sizing rule, which is the same
-                // value under ThresholdStrategy.
-                let size_quote = entry_sizes
-                    .remove(&t.instid)
-                    .unwrap_or(account.balance.spendable);
+            let view = token.entry_view(denied);
+            match strategy.should_enter(&ctx, &view) {
+                EnterDecision::Enter { size_quote } => {
+                    let book = token.top_of_book();
 
-                // Round size to the instrument's lot_sz so the exchange
-                // will accept it. Cache miss → UNKNOWN (step 0.0), which
-                // `floor_to_step` passes through unchanged — pre-rounding
-                // behavior for instruments we don't have metadata for.
-                let meta = self
-                    .instruments
-                    .get(&t.instid)
-                    .copied()
-                    .unwrap_or(InstrumentMeta::UNKNOWN);
-                t.balance.start = floor_to_step(size_quote / t.price, meta.lot_sz);
-                t.configure_from_report(config, &self.db_session).await;
+                    // No book, no entry.
+                    //
+                    // `top_of_book()` falls back to a synthetic spread around
+                    // `last` when the feed gave us no bid/ask. That fallback is
+                    // there so *exits* always have a price — we must be able to get
+                    // out. It has no business authorizing an entry: OKX sends
+                    // `askPx: ""` whenever a side of the book is empty, and an
+                    // instrument with nothing resting on the offer is not one you
+                    // can buy. Inventing an ask for it would mean pricing a real
+                    // order off a number we made up.
+                    //
+                    // Note this also closes a hole in the spread guard below, which
+                    // returns `None` (and therefore skips itself) when there is no
+                    // book to measure.
+                    if book.synthetic {
+                        log::debug!(
+                            "[{}] entry skipped: no book (askpx/bidpx empty or missing)",
+                            token.instid
+                        );
+                        continue;
+                    }
 
-                {
-                    let order = t
-                        .buy(
-                            self.exchange.enable_trading,
-                            account.authentication.clone(),
-                            config,
-                            self.clock.now_utc(),
-                            meta,
-                        )
-                        .await?
-                        .orders
-                        .as_ref()
-                        .and_then(|orders| orders.last())
-                        .unwrap();
+                    // Spread guard (`strategy.max_spread_bps`; `None` disables).
+                    //
+                    // The strategy can't see the book — `TokenView` carries no
+                    // bid/ask — so this lives here. It is the cheapest filter
+                    // available and nothing in this system has ever applied it:
+                    // a round trip costs `2 x taker_fee` (20bps at the default)
+                    // *plus* the spread, twice, against a 1% take-profit.
+                    if let (Some(max_spread), Some(spread)) =
+                        (config.max_spread_bps, token.spread_bps())
+                    {
+                        if spread > f64::from(max_spread) {
+                            log::debug!(
+                                "[{}] entry skipped: spread {:.1}bps > max {:.1}bps",
+                                token.instid,
+                                spread,
+                                max_spread
+                            );
+                            continue;
+                        }
+                    }
+                    let meta = self
+                        .instruments
+                        .get(&token.instid)
+                        .copied()
+                        .unwrap_or(InstrumentMeta::UNKNOWN);
+                    // Size against the price we will actually bid, not the last
+                    // trade, and honor `min_sz` — which we fetch from OKX and,
+                    // until now, never used. An order below `min_sz` is rejected
+                    // by the exchange and comes back looking exactly like a
+                    // missed fill, which is how it stayed invisible.
+                    let limit_px = token.entry_limit(meta);
+                    let Some(size) = meta.order_size(size_quote, limit_px) else {
+                        log::warn!(
+                            "[{}] entry skipped: {:.4} quote at {} is below min_sz {}",
+                            token.instid,
+                            size_quote,
+                            limit_px,
+                            meta.min_sz
+                        );
+                        continue;
+                    };
 
-                    order.save(&self.db_session).await?;
-                    let log_line = self.build_order_log(order);
-                    self.logs.push(log_line);
-                    self.round_id += 1;
-                }
+                    // Depth guard. We bid exactly the ask, so an IOC never reaches
+                    // past level 1: the order fills in full iff it fits inside
+                    // `ask_sz`, and otherwise a real IOC takes what's there and
+                    // cancels the rest — leaving a position smaller than we sized,
+                    // which the rest of this state machine has no honest way to
+                    // carry.
+                    //
+                    // So: don't take it. If this fires often, the instrument is too
+                    // thin for `spendable` and no amount of order-book data will
+                    // fix that; raise `min_vol` or cut the size.
+                    if !book.ask_covers(size) {
+                        log::debug!(
+                            "[{}] entry skipped: size {:.8} exceeds best ask size {:.8} \
+                             ({:.2} USDT resting at {})",
+                            token.instid,
+                            size,
+                            book.ask_sz,
+                            book.ask_notional(),
+                            book.ask
+                        );
+                        continue;
+                    }
 
-                t.report = Report::new(self.round_id, &config.hash, t, self.clock.now_utc());
+                    // The conditions that justified this trade, recorded so the entry
+                    // filters can eventually be tuned against outcomes rather than
+                    // arguments. `min_dip` says what we *required*; `signal.dip`
+                    // says what we actually *got*, and only the second one can tell
+                    // us whether the requirement is set anywhere near right.
+                    let entry = PendingEntry {
+                        size,
+                        signal: strategy.entry_signal(&ctx, &view),
+                        std_deviation: f64::from(token.std_deviation),
+                        spread_bps: token.spread_bps().unwrap_or(0.0),
+                    };
+
+                    let before = account.portfolio.len();
+                    account.add_token(token, config);
+                    // `add_token` silently no-ops when the portfolio is full or the
+                    // balance is short; only record the entry if it took the position.
+                    if account.portfolio.len() > before {
+                        pending.insert(token.instid.clone(), entry);
+                    }
+                },
+                EnterDecision::Skip(reason) => {
+                    log::debug!(
+                        "[{}] entry skipped by {}: {}",
+                        token.instid,
+                        strategy.name(),
+                        reason
+                    );
+                },
             }
         }
+
+        for t in account.portfolio.iter_mut() {
+            // Only *fresh* entries get an order.
+            //
+            // This loop used to re-bid any position whose buy came back
+            // Cancelled — `buy_orders = any(side == Buy && state != Cancelled)`
+            // — with no fresh strategy decision (the old comment said so out
+            // loud). Combined with an IOC priced *under* the market, that turned
+            // a one-shot entry into "chase this token until it fills", and the
+            // price it eventually filled at was, by construction, a price that
+            // had fallen to meet us. Every retry was a worse entry than the one
+            // the strategy actually asked for.
+            //
+            // A cancelled entry is now abandoned. `Account::clean_portfolio`
+            // drops the token; it becomes a candidate again on its own merits
+            // once its cooldown expires and it re-passes `should_enter`.
+            if t.orders.is_some() {
+                continue;
+            }
+            let Some(entry) = pending.remove(&t.instid) else {
+                continue;
+            };
+
+            let meta = self
+                .instruments
+                .get(&t.instid)
+                .copied()
+                .unwrap_or(InstrumentMeta::UNKNOWN);
+
+            t.balance.start = entry.size;
+            t.configure(config);
+
+            {
+                let order = t
+                    .buy(
+                        self.exchange.enable_trading,
+                        account.authentication.clone(),
+                        config,
+                        self.clock.now_utc(),
+                        meta,
+                    )
+                    .await?
+                    .orders
+                    .as_ref()
+                    .and_then(|orders| orders.last())
+                    .ok_or_else(|| anyhow::anyhow!("buy() produced no order"))?;
+
+                order.save(&self.db_session).await?;
+                let log_line = self.build_order_log(order);
+                self.logs.push(log_line);
+                self.round_id += 1;
+            }
+
+            t.report = Report::new(self.round_id, &config.hash, t, self.clock.now_utc());
+            t.report.dip = entry.signal.dip;
+            t.report.bounce = entry.signal.bounce;
+            t.report.std_deviation = entry.std_deviation;
+            t.report.spread_bps = entry.spread_bps;
+        }
+
+        // Safety net: a position with no order occupies a portfolio slot and can
+        // never do anything. Should be unreachable now, but the old code's worst
+        // bug was a slot held by a token in limbo.
+        account.portfolio.retain(|t| t.orders.is_some());
+
         Ok(account)
     }
 
@@ -483,6 +637,7 @@ impl App {
             }
         )
     }
+
     pub async fn sell_tokens(
         &mut self,
         mut account: Account,
@@ -534,20 +689,18 @@ impl App {
                         .orders
                         .as_ref()
                         .and_then(|orders| orders.last())
-                        .unwrap();
+                        .ok_or_else(|| anyhow::anyhow!("sell() produced no order"))?;
 
                     order.save(&self.db_session).await?;
                     let log_line = self.build_order_log(order);
                     self.logs.push(log_line);
                 }
 
-                //build up deny list if stoploss.
                 let denied = self
                     .deny_list
                     .iter()
                     .any(|i| format!("{}-USDT", i) == t.instid);
 
-                //deny tokens to be bought again
                 if t.exit_reason == Some(ExitReason::Stoploss)
                     && config.avoid_after_stoploss
                     && !denied
@@ -555,50 +708,42 @@ impl App {
                     self.deny_list.push(t.instid.replace("-USDT", ""))
                 };
 
-                // Create token report — compute realized P&L honestly.
+                // OKX takes the taker fee on a spot BUY in the base currency: we pay
+                // `size * buy_price` USDT and receive `size * (1 - f)` tokens.
+                // `calculate_balance` already sets `balance.current` to the
+                // fee-reduced token amount — so the entry fee is *inside* the
+                // balance we are about to sell.
                 //
-                // Every round-trip pays the taker fee twice: once on entry
-                // (the buy debited `cost + entry_fee` from our balance) and
-                // once on exit (the sell credits `proceeds - exit_fee`).
-                // Both must be subtracted for `earnings` to match reality.
-                // Previously only the exit fee was netted, which understated
-                // every trade's loss (or overstated its win) by one fee —
-                // roughly $0.05 per trade at $50 spendable + 0.10% taker.
+                // The old line was `let total_cost = cost + entry_fee;`, which
+                // charged it a second time. Every loss was overstated by exactly
+                // one entry fee (0.1% of notional, $0.05 at $50), and every report
+                // ever generated inherited it. The comment on that block said it
+                // was fixing an understated loss; it overshot.
+                //
+                //   net = size * (1-f)^2 * sell  -  size * buy
+                //
+                // `fees` below is still the true round-trip cost in USDT and is
+                // reported as such — it just isn't subtracted twice.
                 let cost = t.balance.start * t.buy_price;
                 let entry_fee = calculate_fees(cost, self.exchange.taker_fee);
                 let proceeds = t.balance.current * t.price;
                 let exit_fee = calculate_fees(proceeds, self.exchange.taker_fee);
                 let net_proceeds = proceeds - exit_fee;
-                let total_cost = cost + entry_fee;
-                // Signed P&L: positive = profit, negative = loss.
-                let earnings = net_proceeds - total_cost;
+                let earnings = net_proceeds - cost;
                 let fees = entry_fee + exit_fee;
 
                 t.report.earnings = earnings;
                 t.report.fees = fees;
-                // Realized change over the round-trip, not `t.change` (which
-                // is the strategy's live view and can move between the exit
-                // decision and the sell fill). This makes `change` and
-                // `earnings` self-consistent — they're now the same trade.
                 t.report.change = if t.buy_price > 0.0 {
                     (((t.price - t.buy_price) / t.buy_price) * 100.0) as f32
                 } else {
                     0.0
                 };
+                t.report.buy_price = t.buy_price;
                 t.report.sell_price = t.price;
 
                 t.report.save(&self.db_session).await?;
 
-                // Fan out to the console over WS, if a listener exists.
-                // `try_send` is deliberate — a slow/dead consumer must never
-                // stall the trade loop. Dropping a report here just means
-                // the console misses one; Scylla has the ground truth.
-                //
-                // The enclosing guard re-fires while the token stays in
-                // `Selling` status with an unfilled sell order (which can
-                // last many cycles in the IOC-retry simulator path), so we
-                // dedup by round_id — one emit per closed position, even
-                // though the DB write is idempotent by primary key.
                 if let Some(tx) = &self.report_tx {
                     if self.emitted_reports.insert(t.report.round_id) {
                         let event = crate::ws::channel::ReportEvent {
@@ -616,8 +761,7 @@ impl App {
         Ok(account)
     }
 
-    /// Keeps only tokens the strategy would enter. The threshold checks that
-    /// used to live in `Token::is_valid` now run behind `should_enter`.
+    /// Keeps only tokens the strategy would enter, then ranks them.
     pub fn filter_invalid(
         &mut self,
         strategy: &dyn Strategy,
@@ -640,27 +784,54 @@ impl App {
                 },
             }
         });
-        // Descending sort by `change` (highest momentum first). Was
-        // comparing `b.std_deviation` to `a.change` — two different fields,
-        // which isn't a total order and panics in `smallsort` since Rust
-        // 1.81 validates comparators. NaN falls to `Equal` so a bad tick
-        // can't take the loop down.
         self.tokens.sort_by(|a, b| {
-            b.change
-                .partial_cmp(&a.change)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let sa = strategy.rank_score(&ctx, &a.entry_view(false));
+            let sb = strategy.rank_score(&ctx, &b.entry_view(false));
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
         self
     }
 
+    /// Ages every token's cooldown — including the ones no longer in the top-N.
+    ///
+    /// Cooldown means one thing now: **how long after exiting a position before we
+    /// will trade that name again.** It is pinned while the position is open and
+    /// drains once it closes. It is no longer a throttle on *evaluating* a
+    /// candidate — `should_enter` is pure and cheap, and a token that starts
+    /// passing the filters should be buyable immediately rather than serving a
+    /// sentence for having recently been ranked ninth.
+    ///
+    /// See `App::cooldowns` for what this used to do instead, and why it meant the
+    /// bot could only ever buy tokens in sustained downtrends.
     pub fn update_cooldowns(&mut self, portfolio: &[Token]) -> &mut Self {
-        self.tokens.iter_mut().for_each(|t| {
-            t.cooldown = if portfolio.iter().any(|x| x.instid == t.instid) {
-                self.cooldown
+        let reset = self.cooldown;
+        let elapsed = self.time.elapsed;
+
+        for (instid, cooldown) in self.cooldowns.iter_mut() {
+            *cooldown = if portfolio.iter().any(|p| p.instid == *instid) {
+                reset
             } else {
-                t.cooldown - self.time.elapsed
-            }
-        });
+                *cooldown - elapsed
+            };
+        }
+
+        // Newly opened positions start their clock. Held tokens are re-pinned above
+        // on every subsequent cycle, so this only has to catch the first one.
+        for p in portfolio.iter() {
+            self.cooldowns.entry(p.instid.clone()).or_insert(reset);
+        }
+
+        // Expired and not held: forget it. Keeps the map the size of the tokens
+        // actually cooling down rather than the whole universe.
+        self.cooldowns.retain(|_, cd| cd.num_milliseconds() > 0);
+
+        for t in self.tokens.iter_mut() {
+            t.cooldown = self
+                .cooldowns
+                .get(&t.instid)
+                .copied()
+                .unwrap_or_else(Duration::zero);
+        }
         self
     }
 
@@ -684,11 +855,22 @@ impl App {
         let rows_result = result.into_rows_result()?;
         for row in rows_result.rows::<Candlestick>()? {
             let candle = row?;
+            // A token we are re-discovering after `clean_top` dropped it keeps
+            // whatever cooldown it had left. Absent from the map means "not cooling
+            // down" — zero, eligible now. It still has to clear every filter; the
+            // cooldown's job is to stop us re-trading a name we just exited, not to
+            // make a token serve 5 seconds for the crime of being newly seen.
+            let remembered = self
+                .cooldowns
+                .get(&candle.instid)
+                .copied()
+                .unwrap_or_else(Duration::zero);
+
             if let Some(token) = self.tokens.iter_mut().find(|t| candle.instid == t.instid) {
                 token.add_or_update_candle(candle);
             } else {
-                let mut new_token =
-                    Token::new(&candle.instid).set_cooldown(self.cooldown.num_seconds());
+                let mut new_token = Token::new(&candle.instid);
+                new_token.cooldown = remembered;
                 new_token.add_or_update_candle(candle);
                 self.tokens.push(new_token);
             }

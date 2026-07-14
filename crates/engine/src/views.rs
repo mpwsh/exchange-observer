@@ -66,8 +66,22 @@ pub struct PositionView {
     /// Kept as a `Duration` so sub-second comparisons match the scheduler's.
     #[serde_as(as = "serde_with::DurationMilliSeconds<i64>")]
     pub timeout: Duration,
-    /// Whether the token still appears in the scheduler's valid-token list.
-    pub still_listed: bool,
+    /// Highest percent change this position has reached during the hold.
+    ///
+    /// Replaces `still_listed`, which was whether the token currently passes the
+    /// **entry** filter and holds a top-N rank — and which `Thresholds::exit_decision`
+    /// used to gate the `sell_floor` exit on.
+    ///
+    /// That coupling was a live bug. It meant your exit depended on your *entry*
+    /// filter rejecting the token you were already holding. Loosen `min_dip` and a
+    /// rallying position keeps re-qualifying as a fresh entry, `still_listed` stays
+    /// true, and the floor **silently stops firing**. Observed: dropping `min_dip`
+    /// from 0.4 to 0.17 took `floor_reached` from 42% of exits to 14%, and a
+    /// position that peaked at +0.81% rode all the way back to -0.41% because
+    /// nothing was allowed to close it.
+    ///
+    /// A peak is what the floor was always about. Now it says so.
+    pub highest: f64,
     /// Candles covering the configured timeframe, oldest first.
     pub candles: Vec<Candle>,
 }

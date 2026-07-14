@@ -27,7 +27,7 @@ pub mod views;
 
 pub use clock::{Clock, LiveClock, TestClock};
 pub use reversion::{ReversionStrategy, ReversionThresholds};
-pub use strategy::{Context, EnterDecision, ExitDecision, ExitReason, Strategy};
+pub use strategy::{Context, EnterDecision, EntrySignal, ExitDecision, ExitReason, Strategy};
 pub use threshold::{Thresholds, ThresholdStrategy};
 pub use views::{Candle, PortfolioView, PositionView, TokenView};
 
