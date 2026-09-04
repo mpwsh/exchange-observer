@@ -1,0 +1,53 @@
+[package]
+name = "console"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+include = ["../LICENSE-APACHE", "../LICENSE-MIT", "**/*.rs", "Cargo.toml"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# GUI framework — egui_plot's version lags egui by one minor version.
+# egui_plot 0.33 targets egui 0.32; egui_plot 0.34 targets egui 0.33; etc.
+# Keep this trio in sync: bump all three together.
+eframe = { version = "0.32", default-features = false, features = [
+  "default_fonts",
+  "glow",          # smaller wasm vs wgpu
+  "wayland",
+] }
+egui = "0.32"
+egui_plot = "0.33" # 0.33 is the egui_plot release that targets egui 0.32
+
+# Websocket client — no more vendored copy; using crates.io.
+ewebsock = { version = "0.8", features = ["tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = { version = "3", features = ["chrono_0_4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+log = "0.4"
+
+# native only:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
+
+# wasm only:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+  "Document",
+  "HtmlCanvasElement",
+  "Window",
+] }
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

@@ -1,0 +1,38 @@
+[package]
+name = "scheduler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+scylla = { version = "1.7", features = ["chrono-04"] }
+exchange-observer = { path = "../lib" }
+engine = { path = "../engine" }
+tokio = { version = "1.28.0", features = ["full"] }
+futures = "0.3.28"
+bigdecimal = "0.4.3"
+num-bigint = "0.4.4"
+tracing = "0.1.37"
+chrono = { version = "0.4.24", features = ["serde"] }
+serde_derive = "1.0.162"
+serde_json = "1.0"
+serde = { version = "1.0.162", features = ["derive"] }
+comfy-table = "7.1.1"
+console = "0.15.5"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11.3"
+futures-util = "0.3.28"
+reqwest = { version = "0.12.4", features = ["json"] }
+pushover-rs = "0.3.10"
+sha1_smol = "1.0.0"
+uuid = { version = "1.3.1", features = ["v4", "serde"] }
+serde_with = { version = "3.8.1", features = ["chrono", "chrono_0_4"] }
+rand = "0.8.5"
+tokio-tungstenite = "0.21.0"
+futures-channel = "0.3.28"
+
+# Ambient time (`Utc::now`, `Instant::now`) is banned; all time flows through
+# engine::Clock. See clippy.toml at the workspace root.
+[lints.clippy]
+disallowed_methods = "deny"

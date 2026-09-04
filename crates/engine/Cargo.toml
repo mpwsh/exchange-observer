@@ -1,0 +1,19 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.24", features = ["serde"] }
+serde = { version = "1.0.162", features = ["derive"] }
+serde_with = { version = "3.8.1", features = ["chrono", "chrono_0_4"] }
+exchange-observer = { path = "../lib" }
+
+# Ambient time (`Utc::now`, `Instant::now`) is banned workspace-wide; the only
+# sanctioned source of time is the `Clock` port. See clippy.toml at the root.
+[lints.clippy]
+disallowed_methods = "deny"
+
+[dev-dependencies]
+serde_json = "1.0"

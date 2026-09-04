@@ -9,4 +9,3 @@ dc=DC1
 rack=Rack1
 # prefer_local=<false | true>
 # dc_suffix=<Data Center name suffix, used by EC2SnitchXXX snitches>
-#

@@ -1,0 +1,51 @@
+[package]
+name = "consumer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+resolver = "2"
+
+[dependencies]
+exchange-observer = { path = "../lib" }
+
+# ---- logging / errors -----------------------------------------------------
+log = "0.4"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+
+# ---- async runtime --------------------------------------------------------
+tokio = { version = "1.40", default-features = false, features = [
+  "io-std",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "time",
+  "io-util",
+  "sync",
+] }
+futures = "0.3"
+futures-util = { version = "0.3", default-features = false, features = [
+  "sink",
+  "std",
+] }
+futures-channel = "0.3"
+
+# ---- kafka / redpanda -----------------------------------------------------
+rskafka = "0.5"
+
+scylla = { version = "1.7", features = ["metrics"] }
+
+# ---- serde ----------------------------------------------------------------# ---- scylla ---------------------------------------------------------------
+# 1.x moved the session/session_builder paths and added prepared-statement
+# type safety; we take advantage of both here.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+
+# ---- misc -----------------------------------------------------------------
+stream_throttle = "0.5"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

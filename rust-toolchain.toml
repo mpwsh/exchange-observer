@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.73.0"
+channel = "1.92.0"
 components = [
   "cargo",
   "clippy",
@@ -12,5 +12,4 @@ components = [
   "rustfmt",
 ]
 profile = "minimal"
-
 # vim:set ft=toml:
