@@ -13,21 +13,24 @@
 //! previous `as i32` casts wrapped them silently. See `scylla/migration_v3.cql`
 //! for the column changes this requires.
 
+use std::{
+    fmt::{Display, Formatter},
+    str::FromStr,
+};
+
 use anyhow::Result;
 use scylla::value::CqlTimestamp;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // String-encoded-number helpers.
 // ---------------------------------------------------------------------------
 
 mod str_num {
-    use serde::{Deserialize, Deserializer, Serializer, de};
-    use std::fmt::Display;
-    use std::str::FromStr;
+    use std::{fmt::Display, str::FromStr};
+
+    use serde::{de, Deserialize, Deserializer, Serializer};
 
     /// Deserialize a JSON string into any `T: FromStr`.
     ///
@@ -509,10 +512,7 @@ impl Candlestick {
         // OKX sends "1" / "0". Anything we can't read is treated as unconfirmed,
         // which is the conservative reading: a consumer that filters on this
         // should drop the bar rather than trade on it.
-        let confirm = row
-            .get(8)
-            .and_then(Value::as_str)
-            .is_some_and(|s| s == "1");
+        let confirm = row.get(8).and_then(Value::as_str).is_some_and(|s| s == "1");
 
         Candlestick {
             ts,
@@ -588,8 +588,9 @@ pub struct SubscribeArg {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     /// A spot book with fractional sizes and a sequence id above `i32::MAX` —
     /// i.e. an entirely ordinary one.
@@ -652,7 +653,7 @@ mod tests {
         };
         let row = t.to_row("BTC-USDT");
         assert_eq!(row.0, "BTC-USDT");
-        assert_eq!(row.12.0, 1_783_755_266_261);
+        assert_eq!(row.12 .0, 1_783_755_266_261);
     }
 
     #[test]
@@ -762,7 +763,8 @@ mod tests {
 
     #[test]
     fn trade_id_survives_values_above_i32_max() {
-        let raw = r#"{"px":"1.0","side":"buy","sz":"1.0","tradeId":"3000000000","ts":"1783755266261"}"#;
+        let raw =
+            r#"{"px":"1.0","side":"buy","sz":"1.0","tradeId":"3000000000","ts":"1783755266261"}"#;
         let t: Trade = serde_json::from_str(raw).expect("valid trade");
         assert_eq!(t.trade_id, 3_000_000_000);
     }

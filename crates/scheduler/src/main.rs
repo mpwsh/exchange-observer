@@ -101,11 +101,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .update_candles(cfg.strategy.timeframe, app.tokens.clone())
             .await?;
 
-        app.filter_invalid(
-            strategy.as_ref(),
-            &cfg.strategy,
-            &account.portfolio_view(),
-        );
+        app.filter_invalid(strategy.as_ref(), &cfg.strategy, &account.portfolio_view());
         app.clean_top(cfg.strategy.top).get_tickers().await?;
 
         account = app

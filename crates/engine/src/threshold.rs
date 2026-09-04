@@ -8,9 +8,9 @@
 use chrono::Duration;
 
 use crate::{
-    StrategyConfig,
     strategy::{Context, EnterDecision, ExitDecision, ExitReason, Strategy},
     views::{PositionView, TokenView},
+    StrategyConfig,
 };
 
 /// The original threshold-based buy/sell strategy.

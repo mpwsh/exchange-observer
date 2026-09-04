@@ -8,12 +8,12 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, atomic::Ordering},
+    sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 
 use anyhow::Context;
-use exchange_observer::{AppConfig, models::*};
+use exchange_observer::{models::*, AppConfig};
 use futures::StreamExt;
 use log::{error, info, warn};
 use rskafka::client::ClientBuilder;
@@ -24,7 +24,7 @@ use scylla::{
 use stream_throttle::{ThrottlePool, ThrottleRate, ThrottledStream};
 use tokio::{
     sync::Semaphore,
-    time::{Duration as TokioDuration, timeout},
+    time::{timeout, Duration as TokioDuration},
 };
 
 use crate::{
@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 warn!("Error reading from kafka stream: {e}");
                 continue;
-            },
+            }
         };
 
         if let Err(e) = dispatch_record(
@@ -237,7 +237,7 @@ async fn dispatch_record(
         Err(_) => {
             error!("Insert semaphore closed unexpectedly; dropping record");
             return Ok(());
-        },
+        }
     };
 
     tokio::spawn(async move {
@@ -249,11 +249,11 @@ async fn dispatch_record(
                     warn!("Scylla warnings: {warnings:?}");
                 }
                 stats.inserted.fetch_add(1, Ordering::Relaxed);
-            },
+            }
             Err(e) => {
                 error!("Insert failed: {e}");
                 stats.errors.fetch_add(1, Ordering::Relaxed);
-            },
+            }
         }
     });
 
@@ -275,7 +275,7 @@ async fn insert_payload(
             session
                 .execute_unpaged(&prepared.tickers, row.to_row(inst_id))
                 .await?
-        },
+        }
         RowPayload::Candle { inst_id, row } => {
             // The trailing element binds `USING TIMESTAMP` — see
             // `models::CandleRow`. Note it is the *record's* timestamp, not the
@@ -284,18 +284,17 @@ async fn insert_payload(
             session
                 .execute_unpaged(&prepared.candle1m, row.to_row(inst_id, write_ts_micros))
                 .await?
-        },
+        }
         RowPayload::Trade { inst_id, row } => {
             session
                 .execute_unpaged(&prepared.trades, row.to_row(inst_id))
                 .await?
-        },
+        }
         RowPayload::Book { inst_id, row } => {
             session
                 .execute_unpaged(&prepared.books, row.to_row(inst_id))
                 .await?
-        },
+        }
     };
     Ok(result.warnings().map(|s| s.to_owned()).collect())
 }
-

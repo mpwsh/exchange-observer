@@ -1,13 +1,13 @@
 use std::{env, net::Ipv4Addr};
 
 use anyhow::{Context as _, Result};
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use hmac::{Hmac, Mac};
 use log::debug;
 use serde_derive::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
-pub use time::{OffsetDateTime, error::Format, format_description::well_known::Rfc3339};
+pub use time::{error::Format, format_description::well_known::Rfc3339, OffsetDateTime};
 pub mod models;
 pub mod util;
 

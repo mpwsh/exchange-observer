@@ -247,7 +247,9 @@ pub fn decimals_of(step: &str) -> usize {
 /// Fetch every spot instrument's precision metadata in one call.
 pub async fn fetch_spot_instruments() -> Result<Vec<OkxInstrument>> {
     let res = reqwest::Client::new()
-        .get(format!("{BASE_URL}/api/v5/public/instruments?instType=SPOT"))
+        .get(format!(
+            "{BASE_URL}/api/v5/public/instruments?instType=SPOT"
+        ))
         .send()
         .await?
         .json::<OkxInstrumentResponse>()

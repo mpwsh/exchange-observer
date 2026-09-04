@@ -58,10 +58,11 @@
 use chrono::{DateTime, Utc};
 
 use crate::{
-    StrategyConfig, common_checks,
+    common_checks,
     strategy::{Context, EnterDecision, EntrySignal, ExitDecision, Strategy},
     threshold::Thresholds,
     views::{PositionView, TokenView},
+    StrategyConfig,
 };
 
 /// Buy dips that have just started to recover.
@@ -165,7 +166,7 @@ fn completed_len(token: &TokenView, now: Option<DateTime<Utc>>) -> usize {
             if last.ts.timestamp().div_euclid(60) == now.timestamp().div_euclid(60) =>
         {
             n - 1
-        },
+        }
         _ => n,
     }
 }
@@ -802,8 +803,7 @@ mod tests {
 
     #[test]
     fn rank_score_prefers_the_bigger_dislocation_not_the_bigger_percentage() {
-        use crate::clock::TestClock;
-        use crate::views::PortfolioView;
+        use crate::{clock::TestClock, views::PortfolioView};
 
         let clock = TestClock::new(ts() + Duration::minutes(5));
         let mut config = StrategyConfig::default();
@@ -843,9 +843,7 @@ mod tests {
 
     #[test]
     fn rank_score_prefers_deeper_dips() {
-        use crate::StrategyConfig;
-        use crate::clock::TestClock;
-        use crate::views::PortfolioView;
+        use crate::{clock::TestClock, views::PortfolioView, StrategyConfig};
 
         // A minute after the newest candle, so nothing is treated as in-progress.
         let clock = TestClock::new(ts() + Duration::minutes(5));

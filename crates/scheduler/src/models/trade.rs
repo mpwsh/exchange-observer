@@ -175,11 +175,11 @@ impl Order {
                     Ok(res) => {
                         self.response = Some(res.clone());
                         self.id = res.data[0].ord_id.clone();
-                    },
+                    }
                     Err(e) => {
                         self.response = None;
                         log::error!("{:?}", e);
-                    },
+                    }
                 };
             } else {
                 let body = res.text().await?;

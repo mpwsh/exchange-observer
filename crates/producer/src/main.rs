@@ -55,7 +55,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Each channel gets its own WS connection. When one disconnects it sends
     // itself back through this channel and the main loop respawns it.
-    let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<ChannelSettings>(channels.len().max(1));
+    let (disconnect_tx, mut disconnect_rx) =
+        mpsc::channel::<ChannelSettings>(channels.len().max(1));
 
     for channel in &channels {
         tokio::spawn(handle_connection(
@@ -99,14 +100,14 @@ async fn handle_connection(
             Ok(ws_stream) => match run(clients.clone(), ws_stream, &cfg).await {
                 Ok(()) => {
                     warn!("Channel {:?} exited cleanly, reconnecting", channel.name);
-                },
+                }
                 Err(ProducerError::Disconnected) => {
                     warn!("Channel {:?} disconnected, reconnecting", channel.name);
-                },
+                }
                 Err(e) => {
                     error!("Channel {:?} run failed: {e}", channel.name);
                     break;
-                },
+                }
             },
             Err(e) => {
                 error!(
@@ -114,7 +115,7 @@ async fn handle_connection(
                     channel.name, RECONNECT_BACKOFF
                 );
                 tokio::time::sleep(RECONNECT_BACKOFF).await;
-            },
+            }
         }
     }
 
@@ -172,7 +173,7 @@ async fn run(clients: Arc<Clients>, mut ws: WsStream, cfg: &AppConfig) -> Result
                 Err(e) => {
                     warn!("Non-UTF-8 binary frame ({} bytes): {e}", b.len());
                     continue;
-                },
+                }
             },
             Ok(Message::Pong(_)) => continue, // ack of our ping
             Ok(Message::Ping(_)) => continue, // auto-pong'd by tungstenite
@@ -180,13 +181,13 @@ async fn run(clients: Arc<Clients>, mut ws: WsStream, cfg: &AppConfig) -> Result
                 warn!("WebSocket closed by server: {frame:?}");
                 disconnected = true;
                 break;
-            },
+            }
             Ok(Message::Frame(_)) => continue,
             Err(e) => {
                 error!("Error receiving message: {e}");
                 disconnected = true;
                 break;
-            },
+            }
         };
 
         let value = match serde_json::from_str::<serde_json::Value>(&text) {
@@ -194,7 +195,7 @@ async fn run(clients: Arc<Clients>, mut ws: WsStream, cfg: &AppConfig) -> Result
             Err(e) => {
                 warn!("Deserialization error: {e}. Payload: {text}");
                 continue;
-            },
+            }
         };
 
         if let Err(e) =

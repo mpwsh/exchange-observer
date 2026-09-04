@@ -26,12 +26,11 @@ pub mod threshold;
 pub mod views;
 
 pub use clock::{Clock, LiveClock, TestClock};
-pub use reversion::{ReversionStrategy, ReversionThresholds};
-pub use strategy::{Context, EnterDecision, EntrySignal, ExitDecision, ExitReason, Strategy};
-pub use threshold::{Thresholds, ThresholdStrategy};
-pub use views::{Candle, PortfolioView, PositionView, TokenView};
-
 /// The existing threshold bag from `lib`, renamed in engine context to free
 /// the `Strategy` name for the trait. Stays defined in `exchange-observer`
 /// (shared data models + config); `engine` only aliases it.
 pub use exchange_observer::Strategy as StrategyConfig;
+pub use reversion::{ReversionStrategy, ReversionThresholds};
+pub use strategy::{Context, EnterDecision, EntrySignal, ExitDecision, ExitReason, Strategy};
+pub use threshold::{ThresholdStrategy, Thresholds};
+pub use views::{Candle, PortfolioView, PositionView, TokenView};

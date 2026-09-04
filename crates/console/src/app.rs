@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use egui::{
-    Color32, Context, Frame, Key, Margin, RichText, ScrollArea, Sense, Stroke, TextStyle,
-    TopBottomPanel, CentralPanel,
+    CentralPanel, Color32, Context, Frame, Key, Margin, RichText, ScrollArea, Sense, Stroke,
+    TextStyle, TopBottomPanel,
 };
 use egui_plot::{BoxPlot, Corner, Legend, Plot};
 use ewebsock::{Options, WsEvent, WsMessage, WsReceiver, WsSender};
@@ -119,7 +119,9 @@ mod persist {
 
     pub fn load_url() -> Option<String> {
         let path = config_path()?;
-        std::fs::read_to_string(path).ok().map(|s| s.trim().to_owned())
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_owned())
     }
 
     pub fn save_url(url: &str) {
@@ -205,14 +207,16 @@ impl eframe::App for Console {
             frontend.draw_positions(ctx);
         } else {
             // No connection yet: show a friendly empty state in the center.
-            CentralPanel::default().frame(strip_frame()).show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(mono("not connected", DIM));
-                    ui.add_space(4.0);
-                    ui.label(mono("open settings (⚙) to change URL and reconnect", DIM));
+            CentralPanel::default()
+                .frame(strip_frame())
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(mono("not connected", DIM));
+                        ui.add_space(4.0);
+                        ui.label(mono("open settings (⚙) to change URL and reconnect", DIM));
+                    });
                 });
-            });
         }
 
         // Modals last so they render on top of everything else.
@@ -289,9 +293,8 @@ impl Console {
                     // Right side: timestamp, connection pill, settings cog.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Settings cog (rightmost).
-                        let cog =
-                            egui::Button::new(RichText::new("⚙").size(16.0).color(DIM))
-                                .frame(false);
+                        let cog = egui::Button::new(RichText::new("⚙").size(16.0).color(DIM))
+                            .frame(false);
                         if ui.add(cog).on_hover_text("Settings").clicked() {
                             self.settings_url_draft = self.url.clone();
                             self.settings_open = true;
@@ -402,11 +405,7 @@ impl Console {
                             ui.horizontal(|ui| {
                                 cell(ui, 80.0, mono(ts.format("%H:%M:%S").to_string(), DIM));
                                 cell(ui, 20.0, mono(mark, mark_color));
-                                cell(
-                                    ui,
-                                    100.0,
-                                    mono(short_instid(&r.instid), FG),
-                                );
+                                cell(ui, 100.0, mono(short_instid(&r.instid), FG));
                                 cell(ui, 120.0, mono(&r.reason, DIM));
                                 cell(
                                     ui,
@@ -416,11 +415,7 @@ impl Console {
                                         change_color(r.earnings),
                                     ),
                                 );
-                                cell(
-                                    ui,
-                                    60.0,
-                                    mono(format!("${:>5.3}", r.fees), DIM),
-                                );
+                                cell(ui, 60.0, mono(format!("${:>5.3}", r.fees), DIM));
                                 cell(
                                     ui,
                                     70.0,
@@ -429,16 +424,8 @@ impl Console {
                                         change_color(f64::from(r.change)),
                                     ),
                                 );
-                                cell(
-                                    ui,
-                                    70.0,
-                                    mono(format!("{:>+6.2}%", r.highest), DIM),
-                                );
-                                cell(
-                                    ui,
-                                    70.0,
-                                    mono(format!("{:>+6.2}%", r.lowest), DIM),
-                                );
+                                cell(ui, 70.0, mono(format!("{:>+6.2}%", r.highest), DIM));
+                                cell(ui, 70.0, mono(format!("{:>+6.2}%", r.lowest), DIM));
                             });
                         }
                     });
@@ -457,11 +444,8 @@ impl Console {
             .interactable(true)
             .show(ctx, |ui| {
                 let screen = ctx.screen_rect();
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    Color32::from_black_alpha(160),
-                );
+                ui.painter()
+                    .rect_filled(screen, 0.0, Color32::from_black_alpha(160));
                 // Block clicks reaching content below.
                 ui.allocate_rect(screen, Sense::click_and_drag());
             });
@@ -497,11 +481,8 @@ impl Console {
             .interactable(true)
             .show(ctx, |ui| {
                 let screen = ctx.screen_rect();
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    Color32::from_black_alpha(160),
-                );
+                ui.painter()
+                    .rect_filled(screen, 0.0, Color32::from_black_alpha(160));
                 ui.allocate_rect(screen, Sense::click_and_drag());
             });
 
@@ -555,11 +536,11 @@ impl Console {
                 self.frontend = Some(FrontEnd::new(sender, receiver));
                 self.connect_error = None;
                 persist::save_url(&self.url);
-            },
+            }
             Err(err) => {
                 log::error!("Failed to connect to {:?}: {err}", self.url);
                 self.connect_error = Some(err.to_string());
-            },
+            }
         }
     }
 }
@@ -587,25 +568,31 @@ impl ParsedMsg {
     fn from_envelope(envelope: TextMsg) -> Option<Self> {
         match envelope.channel.as_str() {
             "account" => match serde_json::from_str::<Account>(&envelope.data) {
-                Ok(account) => Some(ParsedMsg::Account { account, ts: envelope.ts }),
+                Ok(account) => Some(ParsedMsg::Account {
+                    account,
+                    ts: envelope.ts,
+                }),
                 Err(e) => {
                     log::warn!("Bad account payload: {e}");
                     None
-                },
+                }
             },
             "portfolio" => match serde_json::from_str::<Vec<Token>>(&envelope.data) {
                 Ok(tokens) => Some(ParsedMsg::Portfolio { tokens }),
                 Err(e) => {
                     log::warn!("Bad portfolio payload: {e}");
                     None
-                },
+                }
             },
             "report" => match serde_json::from_str::<Report>(&envelope.data) {
-                Ok(report) => Some(ParsedMsg::Report { report, ts: envelope.ts }),
+                Ok(report) => Some(ParsedMsg::Report {
+                    report,
+                    ts: envelope.ts,
+                }),
                 Err(e) => {
                     log::warn!("Bad report payload: {e}");
                     None
-                },
+                }
             },
             _ => Some(ParsedMsg::Raw {
                 channel: envelope.channel,
@@ -656,60 +643,61 @@ impl FrontEnd {
     fn draw_positions(&mut self, ctx: &Context) {
         self.pump_incoming();
 
-        CentralPanel::default().frame(strip_frame()).show(ctx, |ui| {
-            let Some(ParsedMsg::Portfolio { tokens }) =
-                self.latest_per_channel.get("portfolio").cloned()
-            else {
-                ui.label(mono("waiting for portfolio…", DIM));
-                return;
-            };
+        CentralPanel::default()
+            .frame(strip_frame())
+            .show(ctx, |ui| {
+                let Some(ParsedMsg::Portfolio { tokens }) =
+                    self.latest_per_channel.get("portfolio").cloned()
+                else {
+                    ui.label(mono("waiting for portfolio…", DIM));
+                    return;
+                };
 
-            if tokens.is_empty() {
-                ui.label(mono("no open positions", DIM));
-                return;
-            }
-
-            // Newly-observed tokens open expanded. Manual collapse survives
-            // subsequent portfolio messages because `seen` records them.
-            for token in &tokens {
-                if !self.seen.contains(&token.instid) {
-                    self.seen.insert(token.instid.clone());
-                    self.expanded.insert(token.instid.clone());
+                if tokens.is_empty() {
+                    ui.label(mono("no open positions", DIM));
+                    return;
                 }
-            }
 
-            ScrollArea::vertical()
-                .id_salt("positions_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Compute card width from the scroll area's inner width so
-                    // the vertical scrollbar's reserved gutter doesn't push
-                    // the right column off-screen (which was the earlier
-                    // overflow bug — outer CentralPanel width included the
-                    // area the scrollbar would sit in).
-                    let avail_w = ui.available_width();
-                    let cols = if avail_w >= GRID_2COL_MIN_WIDTH { 2 } else { 1 };
-                    let col_gap = 8.0;
-                    let card_w =
-                        (avail_w - col_gap * (cols as f32 - 1.0)) / cols as f32;
-
-                    for row_tokens in tokens.chunks(cols) {
-                        ui.horizontal_top(|ui| {
-                            for (i, token) in row_tokens.iter().enumerate() {
-                                if i > 0 {
-                                    ui.add_space(col_gap);
-                                }
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(card_w, 0.0),
-                                    egui::Layout::top_down(egui::Align::Min),
-                                    |ui| self.draw_position_card(ui, token, card_w),
-                                );
-                            }
-                        });
-                        ui.add_space(col_gap);
+                // Newly-observed tokens open expanded. Manual collapse survives
+                // subsequent portfolio messages because `seen` records them.
+                for token in &tokens {
+                    if !self.seen.contains(&token.instid) {
+                        self.seen.insert(token.instid.clone());
+                        self.expanded.insert(token.instid.clone());
                     }
-                });
-        });
+                }
+
+                ScrollArea::vertical()
+                    .id_salt("positions_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Compute card width from the scroll area's inner width so
+                        // the vertical scrollbar's reserved gutter doesn't push
+                        // the right column off-screen (which was the earlier
+                        // overflow bug — outer CentralPanel width included the
+                        // area the scrollbar would sit in).
+                        let avail_w = ui.available_width();
+                        let cols = if avail_w >= GRID_2COL_MIN_WIDTH { 2 } else { 1 };
+                        let col_gap = 8.0;
+                        let card_w = (avail_w - col_gap * (cols as f32 - 1.0)) / cols as f32;
+
+                        for row_tokens in tokens.chunks(cols) {
+                            ui.horizontal_top(|ui| {
+                                for (i, token) in row_tokens.iter().enumerate() {
+                                    if i > 0 {
+                                        ui.add_space(col_gap);
+                                    }
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(card_w, 0.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| self.draw_position_card(ui, token, card_w),
+                                    );
+                                }
+                            });
+                            ui.add_space(col_gap);
+                        }
+                    });
+            });
     }
 
     fn pump_incoming(&mut self) {
@@ -721,7 +709,7 @@ impl FrontEnd {
                         Err(e) => {
                             log::warn!("Bad TextMsg envelope: {e}. Raw: {text}");
                             continue;
-                        },
+                        }
                     };
                     let Some(parsed) = ParsedMsg::from_envelope(envelope.clone()) else {
                         continue;
@@ -736,11 +724,11 @@ impl FrontEnd {
                         self.recent_reports.truncate(RECENT_REPORTS_CAP);
                     }
                     self.latest_per_channel.insert(envelope.channel, parsed);
-                },
+                }
                 WsEvent::Opened => log::info!("WebSocket opened"),
                 WsEvent::Closed => log::info!("WebSocket closed"),
                 WsEvent::Error(e) => log::error!("WebSocket error: {e}"),
-                WsEvent::Message(_) => { /* binary ignored */ },
+                WsEvent::Message(_) => { /* binary ignored */ }
             }
         }
     }
@@ -753,11 +741,9 @@ impl FrontEnd {
             // Header row: expand button + symbol + numbers.
             ui.horizontal(|ui| {
                 let arrow = if is_expanded { "▾" } else { "▸" };
-                let btn = egui::Button::new(
-                    RichText::new(arrow).monospace().color(FG),
-                )
-                .frame(false)
-                .min_size(egui::vec2(20.0, 20.0));
+                let btn = egui::Button::new(RichText::new(arrow).monospace().color(FG))
+                    .frame(false)
+                    .min_size(egui::vec2(20.0, 20.0));
                 if ui.add(btn).clicked() {
                     if is_expanded {
                         self.expanded.remove(&token.instid);
@@ -766,10 +752,7 @@ impl FrontEnd {
                     }
                 }
 
-                ui.label(mono(
-                    format!("{:<8}", short_instid(&token.instid)),
-                    FG,
-                ));
+                ui.label(mono(format!("{:<8}", short_instid(&token.instid)), FG));
                 ui.label(mono(format!("{:>10.5}", token.price), FG));
                 ui.label(mono(
                     format!("{:>+6.2}%", token.change),
@@ -807,7 +790,11 @@ impl FrontEnd {
                     f(ui, "vol 20m", mono(format!("{:.0}", token.vol), FG));
                     f(ui, "vol 24h", mono(format!("{:.0}", token.vol24h), FG));
                     f(ui, "range 20m", mono(format!("{:.2}%", token.range), FG));
-                    f(ui, "std dev", mono(format!("{:.4}", token.std_deviation), FG));
+                    f(
+                        ui,
+                        "std dev",
+                        mono(format!("{:.4}", token.std_deviation), FG),
+                    );
                 });
                 ui.add_space(4.0);
 

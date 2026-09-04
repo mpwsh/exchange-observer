@@ -96,4 +96,3 @@ pub struct PortfolioView {
     /// Number of open positions.
     pub positions: usize,
 }
-

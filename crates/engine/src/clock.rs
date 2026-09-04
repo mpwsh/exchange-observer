@@ -91,8 +91,8 @@ impl TestClock {
     /// Moves both wall-clock and monotonic time forward by `delta`.
     pub fn advance(&self, delta: StdDuration) {
         let mut state = self.state.lock().expect("TestClock mutex poisoned");
-        state.now += chrono::Duration::from_std(delta)
-            .expect("TestClock advance delta out of chrono range");
+        state.now +=
+            chrono::Duration::from_std(delta).expect("TestClock advance delta out of chrono range");
         state.mono += delta;
     }
 

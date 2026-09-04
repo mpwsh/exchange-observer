@@ -11,9 +11,9 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    StrategyConfig,
     clock::Clock,
     views::{PortfolioView, PositionView, TokenView},
+    StrategyConfig,
 };
 
 /// Everything a strategy may consult besides the token/position itself.

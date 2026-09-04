@@ -85,10 +85,7 @@ pub fn build_record(
         value: Some(data.as_bytes().to_vec()),
         headers: BTreeMap::from([
             ("Exchange".to_owned(), exchange.as_bytes().to_vec()),
-            (
-                "Channel".to_owned(),
-                channel.to_string().into_bytes(),
-            ),
+            ("Channel".to_owned(), channel.to_string().into_bytes()),
             ("Partition".to_owned(), partition.to_string().into_bytes()),
         ]),
         timestamp: Utc::now(),
@@ -141,19 +138,19 @@ pub async fn send_message(
         Channel::Tickers => {
             let ticker: Ticker = serde_json::from_str(&first_entry()?)?;
             serde_json::to_string(&ticker)?
-        },
+        }
         Channel::Trades => {
             let trade: Trade = serde_json::from_str(&first_entry()?)?;
             serde_json::to_string(&trade)?
-        },
+        }
         Channel::Books => {
             let book: Book = serde_json::from_str(&first_entry()?)?;
             serde_json::to_string(&book)?
-        },
+        }
         Channel::Candle1m => {
             let candle = Candlestick::from_candle(data).get_change().get_range();
             serde_json::to_string(&candle)?
-        },
+        }
     };
 
     let partition = {

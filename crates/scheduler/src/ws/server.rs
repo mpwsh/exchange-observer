@@ -7,8 +7,9 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_tungstenite::{
-    WebSocketStream, accept_async,
+    accept_async,
     tungstenite::{Error, Message, Result},
+    WebSocketStream,
 };
 
 type Tx = futures_util::stream::SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -83,14 +84,14 @@ impl WebSocket {
                         Error::ConnectionClosed
                         | Error::AlreadyClosed
                         | Error::Protocol(_)
-                        | Error::Utf8 => {},
+                        | Error::Utf8 => {}
                         Error::Io(ref err)
                             if err.kind() == std::io::ErrorKind::ConnectionReset
-                                || err.kind() == std::io::ErrorKind::BrokenPipe => {},
+                                || err.kind() == std::io::ErrorKind::BrokenPipe => {}
                         _ => error!("Error sending message: {}", e),
                     }
                     let _ = peers.swap_remove(i);
-                },
+                }
             }
         }
     }

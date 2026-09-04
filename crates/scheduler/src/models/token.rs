@@ -412,9 +412,11 @@ impl Token {
 
         order.publish(trade_enabled, &auth).await?;
 
-        if order.response.as_ref().is_some_and(|response| {
-            response.code.parse::<i64>().map_or(true, |code| code != 0)
-        }) {
+        if order
+            .response
+            .as_ref()
+            .is_some_and(|response| response.code.parse::<i64>().map_or(true, |code| code != 0))
+        {
             order.state = OrderState::Failed;
         }
 
@@ -489,11 +491,7 @@ impl Token {
         }
         self.range = range as f32;
 
-        let changes: Vec<f32> = self
-            .candlesticks
-            .iter()
-            .map(|x| x.change as f32)
-            .collect();
+        let changes: Vec<f32> = self.candlesticks.iter().map(|x| x.change as f32).collect();
         self.std_deviation = std_deviation(&changes).unwrap_or(0.0);
         self
     }
@@ -699,7 +697,7 @@ fn simulate_ioc_fill(instid: &str, order: &mut Order, book: TopOfBook) -> OrderS
             }
             order.px = book.ask.to_string();
             OrderState::Filled
-        },
+        }
         Side::Sell if limit <= book.bid => {
             if !book.bid_covers(size) {
                 log::debug!(
@@ -712,7 +710,7 @@ fn simulate_ioc_fill(instid: &str, order: &mut Order, book: TopOfBook) -> OrderS
             }
             order.px = book.bid.to_string();
             OrderState::Filled
-        },
+        }
         _ => OrderState::Cancelled,
     }
 }

@@ -31,11 +31,9 @@ pub fn display(cfg: &AppConfig, app: &App, account: &Account) -> Result<Vec<Tabl
             ]);
         //print token rows
         for t in app.tokens.iter() {
-            let mut token_row: Vec<Cell> = vec![
-                Cell::new(t.instid.replace("-USDT", ""))
-                    .set_alignment(CellAlignment::Center)
-                    .fg(Color::White),
-            ];
+            let mut token_row: Vec<Cell> = vec![Cell::new(t.instid.replace("-USDT", ""))
+                .set_alignment(CellAlignment::Center)
+                .fg(Color::White)];
 
             let candle_list = show_candles(t.candlesticks.clone());
             token_row.push(

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use console::Term;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use pushover_rs::{
-    Message, MessageBuilder, PushoverResponse, PushoverSound, send_pushover_request,
+    send_pushover_request, Message, MessageBuilder, PushoverResponse, PushoverSound,
 };
 
 use crate::prelude::*;
@@ -114,7 +114,7 @@ impl App {
                     match InstrumentMeta::from_raw(&raw) {
                         Some(meta) => {
                             map.insert(raw.inst_id, meta);
-                        },
+                        }
                         None => skipped += 1,
                     }
                 }
@@ -124,13 +124,13 @@ impl App {
                     skipped
                 );
                 map
-            },
+            }
             Err(e) => {
                 log::warn!(
                     "Could not fetch OKX instruments ({e}); orders will use raw f64 precision"
                 );
                 std::collections::HashMap::new()
-            },
+            }
         };
 
         Ok(App {
@@ -166,7 +166,7 @@ impl App {
                             ),
                         )
                         .await?;
-                    },
+                    }
                     ExitReason::Stoploss => {
                         self.notify(
                             "Stoploss Triggered".to_string(),
@@ -176,7 +176,7 @@ impl App {
                             ),
                         )
                         .await?;
-                    },
+                    }
                     _ => (),
                 }
             }
@@ -325,7 +325,7 @@ impl App {
                 let last_min = match token.candlesticks.last() {
                     Some(candlestick) if candlestick.ts.minute() == dt.minute() => {
                         dt - Duration::seconds(1)
-                    },
+                    }
                     _ => dt,
                 };
 
@@ -530,7 +530,7 @@ impl App {
                     if account.portfolio.len() > before {
                         pending.insert(token.instid.clone(), entry);
                     }
-                },
+                }
                 EnterDecision::Skip(reason) => {
                     log::debug!(
                         "[{}] entry skipped by {}: {}",
@@ -538,7 +538,7 @@ impl App {
                         strategy.name(),
                         reason
                     );
-                },
+                }
             }
         }
 
@@ -781,7 +781,7 @@ impl App {
                 EnterDecision::Skip(reason) => {
                     log::debug!("[{}] filtered by {}: {}", t.instid, strategy.name(), reason);
                     false
-                },
+                }
             }
         });
         self.tokens.sort_by(|a, b| {

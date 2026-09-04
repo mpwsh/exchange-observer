@@ -101,8 +101,8 @@ pub async fn connect_and_subscribe(channel: &ChannelSettings) -> Result<WsStream
 
 pub fn build_subscribe(channel: &str) -> Result<Vec<SubscribeMsg>> {
     let symbols = filter_usdt(fetch_symbols("okx", MarketType::Spot)?);
-    let channel =
-        Channel::from_str(channel).map_err(|_| ProducerError::UnknownChannel(channel.to_owned()))?;
+    let channel = Channel::from_str(channel)
+        .map_err(|_| ProducerError::UnknownChannel(channel.to_owned()))?;
     info!("Building subscribe for channel {channel:?}");
 
     Ok(vec![SubscribeMsg {

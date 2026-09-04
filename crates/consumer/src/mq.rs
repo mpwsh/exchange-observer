@@ -74,11 +74,12 @@ pub async fn init_streams(
                 .push(Arc::clone(&progress));
             total_backlog += latest - start_offset;
 
-            let stream = StreamConsumerBuilder::new(partition_client, StartOffset::At(start_offset))
-                .with_min_batch_size(topic.min_batch_size)
-                .with_max_batch_size(topic.max_batch_size)
-                .with_max_wait_ms(topic.max_wait_ms)
-                .build();
+            let stream =
+                StreamConsumerBuilder::new(partition_client, StartOffset::At(start_offset))
+                    .with_min_batch_size(topic.min_batch_size)
+                    .with_max_batch_size(topic.max_batch_size)
+                    .with_max_wait_ms(topic.max_wait_ms)
+                    .build();
 
             // Record progress as items flow through, then pass them along
             // untouched — the consume loop in main.rs is unaffected.
@@ -94,9 +95,7 @@ pub async fn init_streams(
         }
     }
 
-    info!(
-        "Found {total_backlog} messages between selected offsets and latest. Starting catchup"
-    );
+    info!("Found {total_backlog} messages between selected offsets and latest. Starting catchup");
 
     Ok((streams, Stats::new(total_backlog, offset_map)))
 }
